@@ -57,3 +57,7 @@ asr_seedtts_results.json
 # XPU installer lock/backup
 .pyproject.xpu.lock
 .pyproject.cuda.bak
+
+# Local unattended MiniCPM acceptance artifacts and downloads
+.minicpm-runs/
+.minicpm-cache/
