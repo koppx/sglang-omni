@@ -42,7 +42,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=23027dbc"></script>
+    <script src="../_static/documentation_options.js?v=98feffa1"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -57,11 +57,11 @@
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Audio Translations" href="audio_translations.html" />
-    <link rel="prev" title="LLaDA2.0-Uni" href="../cookbook/llada2_uni.html" />
+    <link rel="prev" title="AuK" href="../cookbook/auk.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.1.4" />
-    <meta name="docbuild:last-update" content="Sep 07, 2026"/>
+  <meta name="docsearch:version" content="0.1.5" />
+    <meta name="docbuild:last-update" content="Sep 13, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -230,7 +230,10 @@
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/whisper_asr.html">Whisper ASR</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_omni.html">Qwen3-Omni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_omni.html">Ming-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/auk.html">AuK</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
 <ul class="current nav bd-sidenav">
@@ -544,6 +547,12 @@
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8008</span>
 </pre></div>
 </div>
+<p>Multimodal preprocessing (tokenization, image/video/audio feature extraction)
+runs serially by default. Add <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.max_concurrency</span> <span class="pre">4</span></code> to
+run it on a thread pool when CPU preprocessing is the bottleneck under
+concurrent load. Threaded preprocessing changes how requests arrive at the
+thinker, so greedy outputs of the bf16 MoE can differ from the serial default;
+keep the default when comparing accuracy across runs.</p>
 <p>For MMSU-style audio-input / text-output benchmarks with short requests, use
 the fused text-path config so the full text path stays inside one worker
 process:</p>
@@ -1216,12 +1225,12 @@ with the AutoRound checkpoint:</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="../cookbook/llada2_uni.html"
+       href="../cookbook/auk.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">LLaDA2.0-Uni</p>
+        <p class="prev-next-title">AuK</p>
       </div>
     </a>
     <a class="right-next"
@@ -1306,7 +1315,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Sep 07, 2026.
+  Last updated on Sep 13, 2026.
   <br/>
 </p>
   </div>
