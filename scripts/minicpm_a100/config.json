@@ -1,0 +1,47 @@
+{
+  "budget_seconds": 28800,
+  "gpu": "0",
+  "port": 30187,
+  "seed": 1879,
+  "model_id": "openbmb/MiniCPM-o-4_5",
+  "model_revision": "main",
+  "asr_model_id": "openai/whisper-small",
+  "asr_model_revision": "main",
+  "dataset_revisions": {
+    "librispeech_clean": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+    "librispeech_other": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+    "fleurs_zh": "168de341b3db6859a9bac1c50a2ef5e3b47647e0",
+    "mmmu": "98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68"
+  },
+  "samples_asr_per_split": 100,
+  "samples_mmmu": 100,
+  "samples_tts": 50,
+  "reference_per_modality": 10,
+  "concurrencies": [1, 2, 4, 8],
+  "repeats": 3,
+  "performance_requests": 32,
+  "soak_seconds": 3600,
+  "request_timeout_seconds": 180,
+  "startup_timeout_seconds": 900,
+  "download_timeout_seconds": 3600,
+  "environment_timeout_seconds": 3600,
+  "stage_timeout_seconds": 3600,
+  "min_disk_gb": 100,
+  "max_idle_memory_mib": 1000,
+  "max_idle_util_percent": 10,
+  "quality_thresholds": {
+    "librispeech_clean_wer": 0.25,
+    "librispeech_other_wer": 0.40,
+    "fleurs_zh_cer": 0.35,
+    "mmmu_accuracy_min": 0.25,
+    "tts_roundtrip_error_max": 0.35
+  },
+  "diagnostic_engine_args": [
+    "--thinker.engine.max_total_tokens", "8192",
+    "--thinker.engine.max_running_requests", "8",
+    "--thinker.engine.mem_fraction_static", "0.45",
+    "--talker.engine.max_total_tokens", "8192",
+    "--talker.engine.max_running_requests", "8",
+    "--talker.engine.mem_fraction_static", "0.25"
+  ]
+}
