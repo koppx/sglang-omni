@@ -6,6 +6,21 @@
 
 发跑前静态复查修正：alignment hook 从 scheduler 的 req 读取最终 token（回调时 data 尚未更新）；先排除短预热请求，再校验 hidden，并只分析对应诊断请求的 chunk 事件。依赖覆盖不再接受必需库缺失，Token2wav 导入失败写入审计 JSON；空参考/TTS 请求文件和 HF 预检空文本不能计为通过。这些属于测试工具修正，不代表 PR 中的模型问题已修复。
 
+## 给开发机 AI 的执行说明
+
+用户要求“读取本 README 并运行测试”时，请直接完成准备、启动、观察和报告汇总，不要只复述命令。默认执行一次 `bug-regression`，单卡 A100 80GB，总预算 8 小时，样本量和阈值使用仓库配置。安装依赖、下载缺失评测资源属于本流程；不要自行改模型代码、降低阈值或反复重跑直到通过。
+
+1. **确定代码**：在用户指定的仓库执行 `git status --short`、`git branch --show-current`、`git log -1 --oneline`。交付分支为 `codex/minicpm-pr1879-regression-20260914`，需要包含 `32cf56ea`（及后续说明更新）。先用 `git remote -v` 确认哪个 remote 指向 `github.com/koppx/sglang-omni`，再 fetch 该分支；干净工作区可切换并快进更新。不要假定 origin 一定是该 fork，不覆盖已有改动，不使用 reset --hard。若存在影响被测代码的改动或无法确定测试版本，报告具体情况后再继续。
+2. **确定机器与路径**：检查 Linux、Python 3.10–3.12、空闲 A100 80GB、端口 30187，以及缓存和输出所在文件系统的可用空间（各至少 100 GiB；同一文件系统只计算一次）。复用用户给定的模型目录；未给路径时先检查配置中的 `model_path`、`MINICPMO_CHECKPOINT`、已有运行的 `resources.json` 和已知 Hugging Face 缓存。找到多个不同版本时请用户选定，不猜测；没有本地模型时按脚本默认下载。用户明确说已有模型或禁止下载但路径无法确定时，只询问模型目录。不要扫描整台机器或停止其他人的 GPU 进程。
+3. **确定参数**：通过 `--model-path` 传入已确认的完整主模型目录，默认 GPU 0；若 GPU 0 忙而另一张 A100 空闲，且用户未指定卡号，可选空闲卡。优先使用用户给定的缓存/产物目录，否则使用仓库 `.minicpm-cache`、`.minicpm-runs`。磁盘不足时询问可用数据盘。每次生成唯一输出目录，不复用旧运行目录。若改端口等环境参数，使用单独 config 副本并通过 `--config` 传入，保留原配置。
+4. **启动一次完整运行**：使用下面的后台模板或开发机已有的持久作业机制。记录实际命令、PID/作业 ID、输出目录和退出码。主脚本自动管理两套 venv、资源准备、测试顺序、服务重启和清理，不需要另起模型服务。不要先在系统 Python 手动安装一套模型依赖。
+5. **观察到结束**：检查 launcher 日志和 `summary.json`，阶段失败时让主脚本继续执行其余独立实验。以进程退出/作业完成和最终报告共同判断结束；运行中的 summary 可能已是 FAIL，不能据此提前停止。AI 会话中断不应杀掉后台任务；恢复后先查看原 PID/作业和日志，不重复启动。运行环境无法持续等待时，明确告知任务仍在后台运行及查询方式，不声称已完成。
+6. **交付实验结论**：读取最终 `report.md`、`summary.json`、`results/` 与失败日志，报告实际 commit、模型路径/版本、GPU、耗时、退出码、PASS/FAIL/BLOCKED/INCOMPLETE 项数。分别列出确定的代码问题、根因待查现象、依赖/数据/测试工具失败；每项引用文件和错误原文。没有有效参考结果不能声称精度通过，没有取消日志不能声称服务端已取消，阶段 PASS 也不代表所有模型能力通过。给出完整产物目录，不仅转述总状态。不要在测试尚活跃时使用 `--recover-report`。
+
+用户可以给开发机 AI 发送：
+
+> 请读取当前仓库的 scripts/minicpm_a100/README.md，按“给开发机 AI 的执行说明”完成一次单卡 A100 80GB、8 小时预算的 bug-regression 测试。已有主模型目录是【填实际路径】，请复用。其余路径按 README 自动选择；从准备、启动一直跟踪到结束，保留失败日志并总结实验报告。不要修改模型代码或放宽断言，信息齐全后直接运行。
+
 ## 开发机执行
 
 先将整个 `scripts/minicpm_a100/` 同步到准备测试的最新仓库，包含新增文件和 `alignment_hook/` 子目录。只复制 run.py 不够；git pull 不会同步本地未提交改动。Linux、Python 3.10–3.12、单卡 A100 80GB，建议至少 100 GiB 可用空间；两个 venv 会增加依赖下载与磁盘占用。
@@ -32,6 +47,27 @@ nohup python3 scripts/minicpm_a100/run.py --mode bug-regression --gpu 0 \
 ```
 
 输出目录必须是新目录，避免覆盖旧证据。跨运行严格固定模型版本：使用相同本地模型目录或在 config 中填入先前 resources.json 的模型 SHA，不使用漂移的 main。
+
+AI 执行时可使用以下模板额外保存 PID 和退出码（先将模型和缓存路径改为实际路径；无本地主模型时省略 `--model-path`）：
+
+```bash
+mkdir -p .minicpm-runs
+RUN_DIR="$(pwd)/.minicpm-runs/$(date +%Y%m%d-%H%M%S)-$$"
+nohup bash -c '
+  run_dir=$1
+  shift
+  python3 scripts/minicpm_a100/run.py --output "$run_dir" "$@"
+  run_exit=$?
+  printf "%s\n" "$run_exit" > "${run_dir}.exitcode"
+  exit "$run_exit"
+' _ "$RUN_DIR" --mode bug-regression --gpu 0 \
+  --model-path /data/models/MiniCPM-o-4_5 \
+  --cache-dir /data/minicpm-cache > "${RUN_DIR}.launcher.log" 2>&1 &
+echo "$!" > "${RUN_DIR}.pid"
+echo "Run: $RUN_DIR"
+```
+
+`.pid`、`.exitcode` 和 `.launcher.log` 位于运行目录旁边。退出码文件尚未出现只表示尚未记录正常退出，也可能是机器/进程异常终止，需要结合进程状态与日志判断。PID 应连同启动时间/命令核对，避免 PID 重用造成误判。
 
 ## 两种模式
 
