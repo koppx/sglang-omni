@@ -31,7 +31,8 @@ if os.environ.get('MINICPM_ALIGNMENT_DIR'):
                 prompt = getattr(data, 'input_ids', None)
             if isinstance(prompt, torch.Tensor):
                 prompt = prompt.tolist()
-            ids = list(getattr(data, 'output_ids', []))
+            # Scheduler copies req.output_ids to data only AFTER this callback.
+            ids = list(req.output_ids) if req is not None else None
             key = hashlib.sha256(json.dumps(prompt).encode()).hexdigest()
             torch.save(dict(request_id=request_id, prompt_ids=prompt, output_ids=ids,
                             hidden=torch.stack(sequence) if sequence else None), root / f'{key}-{request_id}.pt')

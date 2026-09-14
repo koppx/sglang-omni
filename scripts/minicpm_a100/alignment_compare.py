@@ -16,17 +16,22 @@ for name in ('alignment_baseline', 'alignment_chunked'):
     data = {}
     for path in directory.glob('*.pt'):
         x = torch.load(path, map_location='cpu', weights_only=True)
-        if x['prompt_ids'] is None or x['hidden'] is None:
-            r['violations'].append(f'{path.name}: missing prompt/hidden capture')
+        if x['prompt_ids'] is None:
+            r['violations'].append(f'{path.name}: missing prompt capture')
             continue
         key = tuple(x['prompt_ids'])
         # Ignore startup warmup; diagnostic cases have substantial prompts.
         if len(key) < 200:
             continue
+        if x['hidden'] is None or x['output_ids'] is None or not x['output_ids']:
+            r['violations'].append(f'{path.name}: missing diagnostic hidden/output token capture')
+            continue
         data[key] = x
         if len(x['hidden']) != len(x['output_ids']):
             r['violations'].append(f'{name}/{path.name}: hidden count != generated token count')
-    events = [json.loads(line) for path in directory.glob('events-*.jsonl') for line in path.read_text().splitlines()]
+    request_ids = {x['request_id'] for x in data.values()}
+    events = [e for path in directory.glob('events-*.jsonl') for line in path.read_text().splitlines()
+              if (e := json.loads(line))['request_id'] in request_ids]
     if not events or any(e['middle_chunks'] is None for e in events):
         r['violations'].append(f'{name}: missing scheduler chunk state instrumentation')
     if name.endswith('chunked') and not any((e['middle_chunks'] or 0) > 0 for e in events):

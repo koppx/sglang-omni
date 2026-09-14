@@ -4,6 +4,8 @@
 
 本次修改**未在本地运行测试或 GPU 实验**；请在开发机验证。HF 独立环境和诊断 hook 是待开发机验证的实现，不代表已通过兼容性或精度验收。
 
+发跑前静态复查修正：alignment hook 从 scheduler 的 req 读取最终 token（回调时 data 尚未更新）；先排除短预热请求，再校验 hidden，并只分析对应诊断请求的 chunk 事件。依赖覆盖不再接受必需库缺失，Token2wav 导入失败写入审计 JSON；空参考/TTS 请求文件和 HF 预检空文本不能计为通过。这些属于测试工具修正，不代表 PR 中的模型问题已修复。
+
 ## 开发机执行
 
 先将整个 `scripts/minicpm_a100/` 同步到准备测试的最新仓库，包含新增文件和 `alignment_hook/` 子目录。只复制 run.py 不够；git pull 不会同步本地未提交改动。Linux、Python 3.10–3.12、单卡 A100 80GB，建议至少 100 GiB 可用空间；两个 venv 会增加依赖下载与磁盘占用。

@@ -35,6 +35,9 @@ def main():
         answer = model.chat(msgs=[dict(role='user', content='Reply OK.')], processor=processor,
             tokenizer=processor.tokenizer, do_sample=False, generate_audio=False,
             enable_thinking=cfg['enable_thinking'], max_new_tokens=32)
+        text = answer[0] if isinstance(answer, tuple) else answer
+        if not isinstance(text, str) or not text.strip():
+            raise RuntimeError('HF preflight returned no text')
         save(a.run_dir / 'results/reference_preflight.json', dict(failed=0, response=str(answer)))
         return
     inputs = json.loads((a.run_dir / 'reference-inputs.json').read_text())

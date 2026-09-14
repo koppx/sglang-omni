@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import traceback
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from run import save
@@ -28,7 +29,18 @@ for dist in md.distributions():
         except md.PackageNotFoundError:
             version = None
         if version is None or (req.specifier and not req.specifier.contains(version, prereleases=True)):
-            accepted = cfg['dependency_policy'] == 'minicpmo-override' and owner == 'minicpmo-utils' and canonicalize_name(req.name) in allowed
+            name = canonicalize_name(req.name)
+            missing_allowed = name in {'decord', 'moviepy'}
+            if name == 'onnxruntime' and version is None:
+                try:
+                    md.version('onnxruntime-gpu')
+                    import onnxruntime
+                    missing_allowed = True
+                except (md.PackageNotFoundError, ImportError):
+                    pass
+            accepted = (cfg['dependency_policy'] == 'minicpmo-override' and
+                        owner == 'minicpmo-utils' and name in allowed and
+                        (version is not None or missing_allowed))
             issues.append(dict(package=owner, requirement=str(req), installed=version, accepted_override=accepted))
 result = dict(policy=cfg['dependency_policy'], dependency_consistent=not issues, issues=issues,
               pip_check_exit=check.returncode, pip_check_output=check.stdout + check.stderr,
@@ -37,8 +49,12 @@ result = dict(policy=cfg['dependency_policy'], dependency_consistent=not issues,
 unexplained = [line for line in check.stdout.splitlines() if line and line != 'No broken requirements found.' and not (cfg['dependency_policy'] == 'minicpmo-override' and line.lower().startswith('minicpmo-utils '))]
 result['unexplained_pip_errors'] = unexplained
 result['failed'] = sum(not i['accepted_override'] for i in issues) + len(unexplained) + int(check.returncode not in (0, 1))
+if not result['failed']:
+    try:
+        from stepaudio2 import Token2wav
+    except Exception:
+        result['failed'] += 1
+        result['runtime_import_error'] = traceback.format_exc()
 save(a.run_dir / 'results/dependency_audit.json', result)
 print(json.dumps(result, indent=2))
-if not result['failed']:
-    from stepaudio2 import Token2wav
 sys.exit(bool(result['failed']))

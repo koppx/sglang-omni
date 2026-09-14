@@ -24,6 +24,8 @@ async def run_reference(w):
     if not source.exists():
         raise RuntimeError("No serving reference cases were collected")
     rows = [json.loads(line) for line in source.read_text().splitlines()]
+    if not rows:
+        raise RuntimeError("No serving reference cases were collected")
     result = {"failed": 0, "cases": [], "reference_revision": w.res["models"]["model"]["revision"],
               "generation_gate": "Sequence ratio >= 0.8 is triage, not logits equivalence",
               "encoder_gate": "Same input IDs, finite outputs, same shape, cosine >= 0.98"}
@@ -99,6 +101,8 @@ def score_tts(w):
     if not source.exists():
         raise RuntimeError("TTS generation phase has no records")
     rows = [json.loads(line) for line in source.read_text().splitlines()]
+    if not rows:
+        raise RuntimeError("TTS generation phase has no records")
     path = w.res["asr_model_path"]
     processor = AutoProcessor.from_pretrained(path)
     model = AutoModelForSpeechSeq2Seq.from_pretrained(path, torch_dtype=torch.float16).eval().cuda()
