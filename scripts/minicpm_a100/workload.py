@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import traceback
+import uuid
 
 from run import save
 
@@ -67,7 +68,7 @@ class Workload:
         body.update(extra)
         return body
 
-    async def request(self, body, *, sample_id=None, audio=None, lang="en", expected_error=False, contains=None, cancel=False, target_text=None, allow_empty=False):
+    async def request(self, body, *, sample_id=None, audio=None, lang="en", expected_error=False, contains=None, cancel=False, target_text=None, allow_empty=False, transcription_threshold=None):
         import httpx
         self.sequence += 1
         ident = f"{self.action}-{self.sequence:06d}"
@@ -100,6 +101,8 @@ class Workload:
                             if chunk.get("error"):
                                 raise RuntimeError(str(chunk["error"]))
                             for choice in chunk.get("choices", []):
+                                if choice.get("finish_reason") is not None:
+                                    rec["finish_reason"] = choice["finish_reason"]
                                 delta = choice.get("delta", {}).get("content") or ""
                                 if delta and ttft is None:
                                     ttft = time.perf_counter() - start
@@ -108,9 +111,13 @@ class Workload:
                                 break
                     if not cancel and not done:
                         raise RuntimeError("SSE closed without [DONE]")
-                    rec.update(response={"chunks": chunks}, text=text, ttft_s=ttft, cancelled=cancel)
+                    rec.update(response={"chunks": chunks}, text=text, ttft_s=ttft,
+                               client_stream_closed_early=bool(cancel and not done and rec.get("finish_reason") is None))
                     if not text:
                         raise RuntimeError("No streaming text received")
+                    if contains and contains.lower() not in text.lower():
+                        raise RuntimeError(f"Expected {contains!r} in streaming response")
+                    self.transport_failures = 0
                     rec["ok"] = True
                     return rec
                 else:
@@ -138,6 +145,16 @@ class Workload:
                     raise RuntimeError("Empty text response")
                 if contains and contains.lower() not in text.lower():
                     raise RuntimeError(f"Expected {contains!r} in response")
+                if transcription_threshold is not None:
+                    import jiwer
+                    from benchmarks.tasks.asr import normalize_text
+                    if not target_text or not normalize_text(target_text, lang).strip():
+                        raise RuntimeError("Missing nonempty transcription target")
+                    error = jiwer.wer(normalize_text(target_text, lang), normalize_text(text, lang))
+                    rec.update(transcription_error=error, transcription_metric="cer" if lang == "zh" else "wer",
+                               transcription_threshold=transcription_threshold)
+                    if error > transcription_threshold:
+                        raise RuntimeError(f"Transcription error {error:.4f} exceeds {transcription_threshold}")
                 if "audio" in body.get("modalities", []) and not allow_empty:
                     payload = message.get("audio", {}).get("data")
                     if not payload:
@@ -208,7 +225,7 @@ class Workload:
             cases.append({"body": {}, "audio": sample["audio"], "sample_id": sample["id"]})
             cases.append({"body": self.chat("Transcribe this audio.", audios=[uri(sample["audio"], "audio/wav")]), "sample_id": sample["id"]})
         for i in range(5):
-            cases.append({"body": self.chat(f"Reply with STREAM{i}.", stream=True, max_tokens=32)})
+            cases.append({"body": self.chat(f"Reply with STREAM{i}.", stream=True, max_tokens=32), "contains": f"STREAM{i}"})
             cases.append({"body": self.chat("Say hello in a short sentence.", modalities=["text", "audio"], audio={"format": "wav"})})
         return cases
 
@@ -217,17 +234,37 @@ class Workload:
         return result
 
     async def cancel_recovery(self):
-        _, cancelled = await self.batch([{"body": self.chat("Count from one to one thousand.", max_tokens=1024, stream=True), "cancel": True}], 1)
-        await asyncio.sleep(1)
-        _, result = await self.batch([{"body": self.chat("Reply OK.", max_tokens=32)}], 1)
+        request_id = "regression-cancel-" + uuid.uuid4().hex
+        records, cancelled = await self.batch([{"body": self.chat("Count from one to one thousand.", max_tokens=1024, stream=True,
+            request_id=request_id), "cancel": True}], 1)
+        evidence = None
+        log = self.out / (self.action + ".log")
+        for _ in range(20):
+            if log.exists():
+                evidence = next((line for line in log.read_text(errors="replace").splitlines()
+                                 if f"Coordinator aborted req={request_id}" in line), None)
+            if evidence:
+                break
+            await asyncio.sleep(.5)
+        _, result = await self.batch(self.recovery_cases(), 1)
         result["cancel_request"] = cancelled
         result["failed"] += cancelled["failed"]
+        result["cancellation_evidence"] = {"request_id": request_id, "coordinator_abort_log": evidence,
+            "log": str(log), "client_stream_closed_early": records[0].get("client_stream_closed_early", False),
+            "scope": "Coordinator abort broadcast/state confirmed by log; per-stage resource reclamation is not verified."}
+        result["incomplete"] = not (evidence and records[0].get("client_stream_closed_early"))
+        if result["incomplete"]:
+            result["incomplete_reason"] = "Missing evidence of early disconnect and matching coordinator abort; recovery requests alone do not prove cancellation"
         return result
+
+    def recovery_cases(self):
+        return [{"body": self.chat("Reply with OK.", max_tokens=32), "contains": "OK"},
+                {"body": self.chat("Say hello in a short sentence.", modalities=["text", "audio"], audio={"format": "wav"})}]
 
     async def empty_output(self):
         _, result = await self.batch([{"body": self.chat("Say hello.", max_tokens=1,
             modalities=["text", "audio"], audio={"format": "wav"}), "allow_empty": True}], 1)
-        _, following = await self.batch([{"body": self.chat("Reply with OK.", max_tokens=32)}], 1)
+        _, following = await self.batch(self.recovery_cases(), 1)
         result["following_request"] = following
         result["failed"] += following["failed"]
         result["scope"] = "Empty/truncated output may return 2xx or explicit 4xx; 500 or service death fails. Not an audio-quality check."
@@ -242,13 +279,15 @@ class Workload:
         sample = self.res["samples"]["librispeech_clean"][0]
         cases.append({"body": self.chat("", messages=[{"role": "user", "content": [
             {"type": "text", "text": "Transcribe this audio."},
-            {"type": "input_audio", "input_audio": {"data": base64.b64encode(Path(sample["audio"]).read_bytes()).decode(), "format": "wav"}}]}]), "target_text": sample["target"]})
+            {"type": "input_audio", "input_audio": {"data": base64.b64encode(Path(sample["audio"]).read_bytes()).decode(), "format": "wav"}}]}]),
+            "target_text": sample["target"], "lang": sample["lang"],
+            "transcription_threshold": self.cfg["quality_thresholds"]["librispeech_clean_wer"]})
         cases.append({"body": self.chat("", messages=[
             {"role": "user", "content": [{"type": "text", "text": "Remember the first image."}, {"type": "image_url", "image_url": {"url": uri(self.out / "media/red.png", "image/png")}}]},
             {"role": "assistant", "content": "Understood."},
             {"role": "user", "content": [{"type": "image_url", "image_url": {"url": uri(self.out / "media/blue.png", "image/png")}}, {"type": "text", "text": "What color was the FIRST image?"}]}]), "contains": "red"})
         _, result = await self.batch(cases, 1)
-        result["scope"] = "Image semantics and multi-turn ordering; audio completion smoke (ASR accuracy scored separately)."
+        result["scope"] = "Image semantics/multi-turn ordering and standard input_audio transcription WER gate; one audio sample is a regression check, not a benchmark score."
         return result
 
     async def alignment(self):
@@ -572,12 +611,13 @@ async def execute(out, action):
         result["counts"]["measured_failed_requests"] = sum(p.get("failed", 0) for p in result["points"])
         result["counts"]["measured_attempted_requests"] = sum(p.get("attempted", 0) for p in result["points"])
     result["stage_gate_failed"] = bool(result.get("failed"))
+    result["verification_status"] = "FAIL" if result.get("failed") else "BLOCKED" if result.get("incomplete") else "PASS"
     result["legacy_failed_note"] = "failed is a stage gate aggregate including warmup and assertions; request counts are reported separately in counts."
     result["seconds"] = time.perf_counter() - start
     result["request_log"] = str(w.raw)
     save(out / "results" / (action + ".json"), result)
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 1 if result.get("failed") else 0
+    return 1 if result.get("failed") else 2 if result.get("incomplete") else 0
 
 
 if __name__ == "__main__":

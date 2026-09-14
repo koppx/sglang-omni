@@ -160,7 +160,26 @@ class TestHTTP(unittest.IsolatedAsyncioTestCase):
         event = 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
         rec = await self.send(200, text=event, body=self.worker.chat("hello", stream=True), cancel=True)
         self.assertTrue(rec["ok"])
-        self.assertTrue(rec["cancelled"])
+        self.assertTrue(rec["client_stream_closed_early"])
+        self.assertNotIn("cancelled", rec)  # Closing the client is not server abort evidence.
+
+    async def test_stream_assertion_and_truncation_are_preserved(self):
+        event = 'data: {"choices":[{"delta":{"content":"wrong"},"finish_reason":"length"}]}\n\n'
+        rec = await self.send(200, text=event + 'data: [DONE]\n\n',
+                              body=self.worker.chat("hello", stream=True), contains="MARKER")
+        self.assertFalse(rec["ok"])
+        self.assertEqual(rec["finish_reason"], "length")
+
+    async def test_finished_stream_is_not_an_early_disconnect(self):
+        event = 'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}\n\n'
+        rec = await self.send(200, text=event, body=self.worker.chat("hello", stream=True), cancel=True)
+        self.assertFalse(rec["client_stream_closed_early"])
+
+    async def test_wrong_transcription_fails_despite_nonempty_response(self):
+        rec = await self.send(200, {"choices": [{"message": {"content": "wrong words"}}]},
+                              target_text="hello world", transcription_threshold=.25)
+        self.assertFalse(rec["ok"])
+        self.assertGreater(rec["transcription_error"], .25)
 
     async def test_speech_requires_audio_not_just_text(self):
         rec = await self.send(200, {"choices": [{"message": {"content": "hello"}}]}, body=self.worker.chat("hello", modalities=["text", "audio"]))

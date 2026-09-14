@@ -163,13 +163,15 @@ class Runner:
         return subprocess.Popen(list(map(str, command)), cwd=ROOT, env=self.env,
                                 stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
 
-    def command(self, command, log, timeout):
+    def command(self, command, log, timeout, *, allow_incomplete=False):
         remaining = min(timeout, self.deadline - time.monotonic() - 30)
         if remaining <= 0:
             raise TimeoutError("Global eight-hour budget exhausted")
         self.current = self.spawn(command, log)
         try:
             rc = self.current.wait(timeout=remaining)
+            if rc == 2 and allow_incomplete:
+                raise Blocked(f"Required verification evidence unavailable; see {log} and stage result JSON")
             if rc:
                 raise RuntimeError(f"exit={rc}; see {log}")
         except subprocess.TimeoutExpired:
@@ -244,7 +246,7 @@ class Runner:
 
     def worker(self, action, log=None, timeout=None):
         self.command([self.python, HERE / "workload.py", "--run-dir", self.out, "--action", action],
-                     log or action + ".log", timeout or self.config["stage_timeout_seconds"])
+                     log or action + ".log", timeout or self.config["stage_timeout_seconds"], allow_incomplete=True)
 
     def resources(self):
         self.command([self.python, HERE / "prepare.py", "--run-dir", self.out], "resources.log", self.config["download_timeout_seconds"])

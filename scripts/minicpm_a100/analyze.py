@@ -83,6 +83,30 @@ def analyze(out):
                              "scope": "whole monitored window including idle/restarts; per-request logs provide workload boundaries"}
     aa_file = out / "results/aa_restart.json"
     aa = json.loads(aa_file.read_text()) if aa_file.exists() else {}
+    baseline_file = out / "results/performance.json"
+    baseline = json.loads(baseline_file.read_text()) if baseline_file.exists() else {}
+    summary_file = out / "summary.json"
+    summary = json.loads(summary_file.read_text()) if summary_file.exists() else {}
+    cfg = summary.get("config", {})
+    statuses = {stage["name"]: stage["status"] for stage in summary.get("stages", [])}
+
+    def comparison_ready(name, data):
+        if statuses.get(name) != "PASS" or data.get("failed") != 0 or data.get("incomplete"):
+            return False
+        repeats, requests = cfg.get("repeats"), cfg.get("performance_requests")
+        if not isinstance(repeats, int) or repeats <= 0 or not isinstance(requests, int) or requests <= 0:
+            return False
+        # Match every intended measurement, including repeat identities. A partial
+        # baseline must not become valid just because it contains a few text points.
+        modalities = ("text", "audio_input", "speech_output") if name == "performance" else ("text",)
+        concurrencies = cfg.get("concurrencies", []) if name == "performance" else [1]
+        expected = {(shape, modality, c, repeat) for shape in ("short", "long")
+                    for modality in modalities for c in concurrencies for repeat in range(repeats)}
+        points = data.get("points", [])
+        actual = {(p.get("shape"), p.get("modality"), p.get("concurrency"), p.get("repeat")) for p in points}
+        return bool(expected) and actual == expected and len(points) == len(expected) and all(
+            p.get("attempted") == requests and p.get("success") == requests and p.get("failed") == 0 for p in points)
+
     noise = {p["shape"]: abs(p["throughput_change_fraction"]) for p in aa.get("baseline_comparison", []) if p["throughput_change_fraction"] is not None}
     for name in ("ab_text", "ab_no_graph"):
         path = out / f"results/{name}.json"
@@ -92,8 +116,11 @@ def analyze(out):
         for compare in data.get("baseline_comparison", []):
             delta = compare["throughput_change_fraction"]
             floor = noise.get(compare["shape"])
+            invalid = [label for label, source in (("performance", baseline), ("aa_restart", aa), (name, data))
+                       if not comparison_ready(label, source)]
             result["ab"].append({"experiment": name, **compare, "measured_aa_restart_delta_abs": floor,
-                "interpretation": "inconclusive" if floor is None or delta is None or abs(delta) <= floor or data.get("failed") else "directional; one restart A/A is not a confidence interval",
+                "invalid_or_incomplete_runs": invalid,
+                "interpretation": "inconclusive" if invalid or floor is None or delta is None or abs(delta) <= floor else "directional; one restart A/A is not a confidence interval",
                 "evidence": "medium at best; shared-host drift and cross-process scheduling remain possible"})
     result["limitations"] = ["No automatic kernel-code changes or unbounded tuning.",
         "nvidia-smi utilization is not SM Active or Tensor Active; DCGM/nsys hardware counters were not collected.",
