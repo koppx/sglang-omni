@@ -48,8 +48,16 @@ def prepare(out):
 
     for key, repo, revision in [("model", cfg["model_id"], cfg["model_revision"]),
                                 ("asr_model", cfg["asr_model_id"], cfg["asr_model_revision"])]:
-        info = retry(lambda: api.model_info(repo, revision=revision))
-        model_path = retry(lambda: snapshot_download(repo, revision=info.sha))
+        local = cfg.get(key + "_path")
+        if local:
+            model_path = str(Path(local).expanduser().resolve())
+            if not Path(model_path).is_dir():
+                raise RuntimeError(f"Local model directory missing: {model_path}")
+            resolved_revision = "local-content-hashed"
+        else:
+            info = retry(lambda: api.model_info(repo, revision=revision))
+            resolved_revision = info.sha
+            model_path = retry(lambda: snapshot_download(repo, revision=resolved_revision))
         index = Path(model_path) / "model.safetensors.index.json"
         if index.exists():
             for name in set(json.loads(index.read_text())["weight_map"].values()):
@@ -60,7 +68,7 @@ def prepare(out):
         if key == "model" and not (Path(model_path) / "assets/token2wav").is_dir():
             raise RuntimeError("Checkpoint has no assets/token2wav")
         manifest[key + "_path"] = model_path
-        manifest["models"][key] = {"repo": repo, "revision": info.sha,
+        manifest["models"][key] = {"repo": repo, "revision": resolved_revision, "source": "local" if local else "hub",
             "files": {str(p.relative_to(model_path)): {"bytes": p.stat().st_size, "sha256": sha(p)}
                       for p in sorted(Path(model_path).rglob("*")) if p.is_file()}}
         save(out / "resources.partial.json", manifest)

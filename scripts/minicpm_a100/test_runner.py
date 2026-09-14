@@ -83,7 +83,7 @@ class TestLifecycle(unittest.TestCase):
             state = json.loads((Path(temp) / "summary.json").read_text())
             self.assertEqual(state["status"], "FAIL")
             self.assertEqual(next(s for s in state["stages"] if s["name"] == "cleanup")["status"], "PASS")
-            self.assertEqual(next(s for s in state["stages"] if s["name"] == "resources")["status"], "INCOMPLETE")
+            self.assertEqual(next(s for s in state["stages"] if s["name"] == "resources")["status"], "BLOCKED")
             runner.lock.close()
 
     def test_fresh_run_does_not_overwrite_prior_results(self):
@@ -123,6 +123,16 @@ class TestHTTP(unittest.IsolatedAsyncioTestCase):
         rec = await self.send(200, {"choices": [{"message": {"content": "hello"}}], "usage": {"completion_tokens": 1}})
         self.assertTrue(rec["ok"])
         self.assertEqual(json.loads(self.worker.raw.read_text())["text"], "hello")
+
+    async def test_empty_output_probe_does_not_require_waveform(self):
+        rec = await self.send(200, {"choices": [{"message": {"content": ""}}]}, allow_empty=True)
+        self.assertTrue(rec["ok"])
+
+    async def test_circuit_open_does_not_send_request(self):
+        self.worker.circuit_open = True
+        rec = await self.send(200, {"choices": [{"message": {"content": "hello"}}]})
+        self.assertTrue(rec["blocked"])
+        self.assertNotIn("sent", rec)
 
     async def test_http_200_empty_output_is_failure(self):
         rec = await self.send(200, {"choices": [{"message": {"content": ""}}]})

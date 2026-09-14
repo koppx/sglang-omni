@@ -17,7 +17,12 @@
   "samples_mmmu": 100,
   "samples_tts": 50,
   "reference_per_modality": 10,
-  "concurrencies": [1, 2, 4, 8],
+  "concurrencies": [
+    1,
+    2,
+    4,
+    8
+  ],
   "repeats": 3,
   "performance_requests": 32,
   "soak_seconds": 3600,
@@ -31,17 +36,49 @@
   "max_idle_util_percent": 10,
   "quality_thresholds": {
     "librispeech_clean_wer": 0.25,
-    "librispeech_other_wer": 0.40,
+    "librispeech_other_wer": 0.4,
     "fleurs_zh_cer": 0.35,
     "mmmu_accuracy_min": 0.25,
-    "tts_roundtrip_error_max": 0.35
+    "tts_roundtrip_error_max": 0.35,
+    "tts_verbatim_error_max": 0.05
   },
   "diagnostic_engine_args": [
-    "--thinker.engine.max_total_tokens", "8192",
-    "--thinker.engine.max_running_requests", "8",
-    "--thinker.engine.mem_fraction_static", "0.45",
-    "--talker.engine.max_total_tokens", "8192",
-    "--talker.engine.max_running_requests", "8",
-    "--talker.engine.mem_fraction_static", "0.25"
-  ]
+    "--thinker.engine.max_total_tokens",
+    "8192",
+    "--thinker.engine.max_running_requests",
+    "8",
+    "--thinker.engine.mem_fraction_static",
+    "0.45",
+    "--talker.engine.max_total_tokens",
+    "8192",
+    "--talker.engine.max_running_requests",
+    "8",
+    "--talker.engine.mem_fraction_static",
+    "0.25"
+  ],
+  "dependency_policy": "minicpmo-override",
+  "minicpmo_runtime_dependencies": [
+    "hyperpyyaml==1.2.3",
+    "onnx",
+    "einops==0.8.1",
+    "scipy>=1.10.0",
+    "soundfile>=0.12.1"
+  ],
+  "reference_dependencies": [
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
+    "transformers==4.52.4",
+    "accelerate",
+    "librosa==0.11.0",
+    "soundfile",
+    "Pillow",
+    "numpy",
+    "einops",
+    "torchvision==0.26.0"
+  ],
+  "enable_thinking": true,
+  "connection_failure_limit": 2,
+  "oom_requests": 32,
+  "oom_repeats": 3,
+  "alignment_cosine_min": 0.98
 }

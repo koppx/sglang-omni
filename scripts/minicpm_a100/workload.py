@@ -58,6 +58,8 @@ class Workload:
         (out / "results").mkdir(exist_ok=True)
         (out / "audio").mkdir(exist_ok=True)
         self.sequence = 0
+        self.transport_failures = 0
+        self.circuit_open = False
 
     def chat(self, prompt, **extra):
         body = {"model": "minicpm-a100", "messages": [{"role": "user", "content": prompt}],
@@ -65,14 +67,18 @@ class Workload:
         body.update(extra)
         return body
 
-    async def request(self, body, *, sample_id=None, audio=None, lang="en", expected_error=False, contains=None, cancel=False):
+    async def request(self, body, *, sample_id=None, audio=None, lang="en", expected_error=False, contains=None, cancel=False, target_text=None, allow_empty=False):
         import httpx
         self.sequence += 1
         ident = f"{self.action}-{self.sequence:06d}"
         rec = {"id": ident, "sample_id": sample_id, "started_at": time.time(), "request": body,
-               "input_audio": audio, "lang": lang, "ok": False}
+               "input_audio": audio, "lang": lang, "target_text": target_text, "ok": False}
         start = time.perf_counter()
         try:
+            if self.circuit_open:
+                rec["blocked"] = True
+                raise RuntimeError("Circuit open: server transport unavailable; request not sent")
+            rec["sent"] = True
             async with httpx.AsyncClient(timeout=self.cfg["request_timeout_seconds"], trust_env=False) as client:
                 if audio:
                     response = await client.post(self.base + "/v1/audio/transcriptions", data={"model": "minicpm-a100", "language": lang},
@@ -80,6 +86,7 @@ class Workload:
                 elif body.get("stream"):
                     text, ttft, done, chunks = "", None, False, []
                     async with client.stream("POST", self.base + "/v1/chat/completions", json=body) as stream:
+                        rec["http_status"] = stream.status_code
                         stream.raise_for_status()
                         async for line in stream.aiter_lines():
                             if not line.startswith("data:"):
@@ -116,16 +123,22 @@ class Workload:
                         raise RuntimeError(f"Expected 4xx validation error, got {response.status_code}")
                     rec["ok"] = True
                     return rec
+                if allow_empty and 400 <= response.status_code < 500:
+                    rec["ok"] = True
+                    rec["empty_output_semantics"] = "explicit_client_error"
+                    return rec
                 response.raise_for_status()
+                self.transport_failures = 0
                 data = rec["response"]
                 message = data.get("choices", [{}])[0].get("message", {})
                 text = data.get("text", message.get("content")) or ""
                 rec.update(text=text, completion_tokens=data.get("usage", {}).get("completion_tokens", 0))
-                if not text.strip():
+                rec["finish_reason"] = data.get("choices", [{}])[0].get("finish_reason")
+                if not text.strip() and not allow_empty:
                     raise RuntimeError("Empty text response")
                 if contains and contains.lower() not in text.lower():
                     raise RuntimeError(f"Expected {contains!r} in response")
-                if "audio" in body.get("modalities", []):
+                if "audio" in body.get("modalities", []) and not allow_empty:
                     payload = message.get("audio", {}).get("data")
                     if not payload:
                         raise RuntimeError("No output audio")
@@ -144,6 +157,11 @@ class Workload:
                         raise RuntimeError("Silent or heavily clipped audio")
                 rec["ok"] = True
         except Exception as exc:
+            if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
+                self.transport_failures += 1
+                rec["transport_failure"] = True
+                if self.transport_failures >= self.cfg.get("connection_failure_limit", 2):
+                    self.circuit_open = True
             rec.update(error=str(exc), traceback=traceback.format_exc())
         finally:
             rec["latency_s"] = time.perf_counter() - start
@@ -157,11 +175,25 @@ class Workload:
         sem = asyncio.Semaphore(concurrency)
         async def one(case):
             async with sem:
-                return await self.request(**case)
+                result = await self.request(**case)
+                if result.get("http_status", 0) >= 500:
+                    import httpx
+                    try:
+                        async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
+                            response = await client.get(self.base + "/health")
+                            response.raise_for_status()
+                    except Exception:
+                        self.circuit_open = True
+                return result
         start = time.perf_counter()
         results = await asyncio.gather(*(one(case) for case in cases))
         result = metrics(results, time.perf_counter() - start)
         result.update(started_at=min((r["started_at"] for r in results), default=None), ended_at=time.time())
+        result["blocked_requests"] = sum(r.get("blocked", False) for r in results)
+        result["sent_requests"] = sum(r.get("sent", False) for r in results)
+        save(self.out / f"results/{self.action}.last_batch.json", result)
+        if self.circuit_open:
+            raise RuntimeError("Server unavailable: circuit opened; remaining requests were not sent (see JSONL)")
         return results, result
 
     def smoke_cases(self):
@@ -179,6 +211,74 @@ class Workload:
             cases.append({"body": self.chat(f"Reply with STREAM{i}.", stream=True, max_tokens=32)})
             cases.append({"body": self.chat("Say hello in a short sentence.", modalities=["text", "audio"], audio={"format": "wav"})})
         return cases
+
+    async def health(self):
+        _, result = await self.batch([{"body": self.chat("Reply with OK.", max_tokens=32)}], 1)
+        return result
+
+    async def cancel_recovery(self):
+        _, cancelled = await self.batch([{"body": self.chat("Count from one to one thousand.", max_tokens=1024, stream=True), "cancel": True}], 1)
+        await asyncio.sleep(1)
+        _, result = await self.batch([{"body": self.chat("Reply OK.", max_tokens=32)}], 1)
+        result["cancel_request"] = cancelled
+        result["failed"] += cancelled["failed"]
+        return result
+
+    async def empty_output(self):
+        _, result = await self.batch([{"body": self.chat("Say hello.", max_tokens=1,
+            modalities=["text", "audio"], audio={"format": "wav"}), "allow_empty": True}], 1)
+        _, following = await self.batch([{"body": self.chat("Reply with OK.", max_tokens=32)}], 1)
+        result["following_request"] = following
+        result["failed"] += following["failed"]
+        result["scope"] = "Empty/truncated output may return 2xx or explicit 4xx; 500 or service death fails. Not an audio-quality check."
+        return result
+
+    async def content_blocks(self):
+        cases = []
+        for color in ("red", "blue"):
+            cases.append({"body": self.chat("", messages=[{"role": "user", "content": [
+                {"type": "text", "text": "Name the background color."},
+                {"type": "image_url", "image_url": {"url": uri(self.out / f"media/{color}.png", "image/png")}}]}]), "contains": color})
+        sample = self.res["samples"]["librispeech_clean"][0]
+        cases.append({"body": self.chat("", messages=[{"role": "user", "content": [
+            {"type": "text", "text": "Transcribe this audio."},
+            {"type": "input_audio", "input_audio": {"data": base64.b64encode(Path(sample["audio"]).read_bytes()).decode(), "format": "wav"}}]}]), "target_text": sample["target"]})
+        cases.append({"body": self.chat("", messages=[
+            {"role": "user", "content": [{"type": "text", "text": "Remember the first image."}, {"type": "image_url", "image_url": {"url": uri(self.out / "media/red.png", "image/png")}}]},
+            {"role": "assistant", "content": "Understood."},
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": uri(self.out / "media/blue.png", "image/png")}}, {"type": "text", "text": "What color was the FIRST image?"}]}]), "contains": "red"})
+        _, result = await self.batch(cases, 1)
+        result["scope"] = "Image semantics and multi-turn ordering; audio completion smoke (ASR accuracy scored separately)."
+        return result
+
+    async def alignment(self):
+        cases = [{"body": self.chat("Context: " + "Rain fills the river. " * count +
+            "\nSay hello briefly.", max_tokens=64, modalities=["text", "audio"], audio={"format": "wav"})}
+            for count in (100, 300, 600)]
+        _, result = await self.batch(cases, 1)
+        result["scope"] = "Hidden/token evidence captured by diagnostic hook; see alignment_compare for correctness."
+        return result
+
+    async def oom(self):
+        concurrency = int(self.action.split("_c")[1])
+        result = {"failed": 0, "points": [], "memory": [], "concurrency": concurrency}
+        body = self.chat("Read verbatim: " + "Rain fills the river. " * 12,
+                         modalities=["text", "audio"], audio={"format": "wav"})
+        for repeat in range(self.cfg.get("oom_repeats", 3)):
+            for phase in ("before", "after"):
+                snapshot = {"repeat": repeat, "phase": phase, "timestamp": time.time()}
+                for label, command in [("gpu", ["nvidia-smi", "-i", str(self.cfg["gpu"]), "--query-gpu=uuid,memory.used", "--format=csv,noheader"]),
+                                       ("processes", ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,process_name,used_memory", "--format=csv,noheader"])]:
+                    snapshot[label] = subprocess.check_output(command, text=True, timeout=10)
+                result["memory"].append(snapshot)
+                save(self.out / f"results/{self.action}.partial.json", result)
+                if phase == "before":
+                    _, point = await self.batch([{"body": body}] * self.cfg.get("oom_requests", 32), concurrency)
+                    point["repeat"] = repeat
+                    result["points"].append(point)
+                    result["failed"] += point["failed"]
+        result["scope"] = "Fresh server per concurrency; repeated batches on the same server. Growth is not proof of a leak."
+        return result
 
     async def warmup(self):
         # Cold start, then identical warmup before each measured concurrency point.
@@ -199,6 +299,7 @@ class Workload:
             {"role": "user", "content": "What color was that image?"}])
         probe = await self.request(body, contains="red")
         result["multiturn_content_blocks_ok"] = probe["ok"]
+        result["assertion_failures"] = int(not probe["ok"])
         result["failed"] += not probe["ok"]
         return result
 
@@ -211,13 +312,11 @@ class Workload:
                 {"body": self.chat("Describe", images=["data:image/png;base64,bm90LWFuLWltYWdl"]), "expected_error": True},
                 {"body": self.chat("Transcribe", audios=["data:audio/wav;base64,bm90LWF1ZGlv"]), "expected_error": True},
                 {"body": self.chat("Speak", modalities=["text", "audio"], audio={"format": "wav", "ref_audio": "data:audio/wav;base64,bm90LWF1ZGlv"}), "expected_error": True},
-                {"body": self.chat("Count from one to one thousand.", max_tokens=1024, stream=True), "cancel": True},
-                {"body": self.chat("Reply HEALTHY.", max_tokens=16), "contains": "HEALTHY"},
             ]
         for seconds in (0.01, 1, 29, 31, 60):
             cases.append({"body": {}, "audio": str(self.out / f"media/boundary-{seconds}.wav")})
         cases += [{"body": self.chat("Summarize briefly: " + "the blue sky and green grass. " * n, max_tokens=32)} for n in (100, 600, 900)]
-        cases += [{"body": self.chat("Say hello.", max_tokens=1, modalities=["text", "audio"], audio={"format": "wav"})}]
+
         _, result = await self.batch(cases, 1)
         return result
 
@@ -244,6 +343,8 @@ class Workload:
             threshold = self.cfg["quality_thresholds"][key + "_" + metric]
             speed.update(**{metric: error}, threshold=threshold, failed_requests_counted_as_deletions=True)
             result["datasets"][key] = speed
+            speed["quality_gate_failed"] = error > threshold
+            result["quality_gate_failures"] = result.get("quality_gate_failures", 0) + int(error > threshold)
             result["failed"] += speed["failed"] + (error > threshold)
         return result
 
@@ -257,7 +358,8 @@ class Workload:
             correct += bool(r["ok"] and match and match[-1].upper() == s["target"].strip().upper())
         accuracy = correct / len(samples)
         result.update(accuracy=accuracy, parsed=parsed, scoring="strict final Answer: LETTER; no random fallback; multiple-choice subset")
-        result["failed"] += accuracy < self.cfg["quality_thresholds"]["mmmu_accuracy_min"]
+        result["quality_gate_failures"] = int(accuracy < self.cfg["quality_thresholds"]["mmmu_accuracy_min"])
+        result["failed"] += result["quality_gate_failures"]
         return result
 
     async def reference_collect(self):
@@ -278,7 +380,7 @@ class Workload:
             if refs[i % 3]:
                 audio["ref_audio"] = uri(refs[i % 3], "audio/wav")
             prompt = ("Read the following text verbatim: " if sample["lang"] == "en" else "请逐字朗读以下文字：") + sample["target"]
-            cases.append({"body": self.chat(prompt, modalities=["text", "audio"], audio=audio), "sample_id": sample["id"], "lang": sample["lang"]})
+            cases.append({"body": self.chat(prompt, modalities=["text", "audio"], audio=audio), "sample_id": sample["id"], "lang": sample["lang"], "target_text": sample["target"]})
         _, result = await self.batch(cases, 1)
         result["reference_schedule"] = "A, B, default (repeated); waveform checks here, independent ASR after serving stops"
         return result
@@ -438,9 +540,13 @@ async def execute(out, action):
     w = Workload(out, action)
     start = time.perf_counter()
     try:
-        if action in ("reference", "tts_score"):
+        if action in ("reference", "reference_prepare", "tts_score"):
             from reference import run_reference, score_tts
-            result = await run_reference(w) if action == "reference" else score_tts(w)
+            result = score_tts(w) if action == "tts_score" else await run_reference(w)
+        elif action.startswith("alignment_"):
+            result = await w.alignment()
+        elif action.startswith("oom_c"):
+            result = await w.oom()
         elif action.startswith("ab_") or action == "aa_restart":
             result = await w.performance(quick=True)
             cases = w.smoke_cases()[:30] if action == "ab_text" else w.smoke_cases()
@@ -453,6 +559,20 @@ async def execute(out, action):
             result = await getattr(w, action)()
     except Exception:
         result = {"failed": 1, "error": traceback.format_exc()}
+    rows = [json.loads(line) for line in w.raw.read_text().splitlines()] if w.raw.exists() else []
+    result["counts"] = {"sent_requests": sum(r.get("sent", False) for r in rows),
+                        "passed_requests": sum(r["ok"] for r in rows),
+                        "http_2xx_responses": sum(200 <= r.get("http_status", 0) < 300 for r in rows),
+                        "response_assertion_failures": sum(not r["ok"] and 200 <= r.get("http_status", 0) < 300 for r in rows),
+                        "failed_requests": sum(not r["ok"] and not r.get("blocked", False) for r in rows),
+                        "blocked_requests": sum(r.get("blocked", False) for r in rows),
+                        "transport_failures": sum(r.get("transport_failure", False) for r in rows),
+                        "truncated_responses": sum(r.get("finish_reason") == "length" for r in rows)}
+    if "points" in result:
+        result["counts"]["measured_failed_requests"] = sum(p.get("failed", 0) for p in result["points"])
+        result["counts"]["measured_attempted_requests"] = sum(p.get("attempted", 0) for p in result["points"])
+    result["stage_gate_failed"] = bool(result.get("failed"))
+    result["legacy_failed_note"] = "failed is a stage gate aggregate including warmup and assertions; request counts are reported separately in counts."
     result["seconds"] = time.perf_counter() - start
     result["request_log"] = str(w.raw)
     save(out / "results" / (action + ".json"), result)
