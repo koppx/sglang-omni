@@ -103,6 +103,33 @@ def test_end_clamped_to_captured_hidden():
     assert out["tts_token_ids"].tolist() == [10]
 
 
+def test_history_eos_with_truncated_current_span():
+    # A previous speech turn's <|tts_eos|> in the prompt must not close the
+    # current span when this turn is truncated before emitting its own end
+    # marker: slicing at the globally last <|tts_eos|> yields end < start
+    # (empty span) although current speech tokens are available.
+    state = _state(
+        [1, TTS_BOS, 20, 21, TTS_EOS, 5, TTS_BOS],  # history turn + this bos
+        [30, 31],  # truncated: no TTS_EOS of its own
+    )
+    out = _build(state)
+    assert out["tts_token_ids"].tolist() == [30, 31]
+    # full positions 8,9 → hidden indices 1,2 (hidden_base = prompt_len-1 = 6)
+    assert out["tts_hidden"][:, 0].tolist() == [1.0, 2.0]
+
+
+def test_history_eos_with_completed_current_span():
+    # A completed current turn still ends at its own marker even when the
+    # prompt carries an earlier <|tts_eos|>.
+    state = _state(
+        [1, TTS_BOS, 20, 21, TTS_EOS, 5, TTS_BOS],
+        [30, TTS_EOS, 7],
+    )
+    out = _build(state)
+    assert out["tts_token_ids"].tolist() == [30]
+    assert out["tts_hidden"][:, 0].tolist() == [1.0]
+
+
 def test_talker_replay_uses_req_fill_ids_api() -> None:
     class Embedding:
         weight = torch.empty(8, 4)

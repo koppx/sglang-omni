@@ -514,9 +514,15 @@ def build_talker_request(
 ) -> dict[str, torch.Tensor]:
     """Slice the ``<|tts_bos|>``…``<|tts_eos|>`` span for the TTS condition.
 
-    Mirrors the remote code's tts_bound: over the full sequence (prompt +
-    generated), start = last ``<|tts_bos|>`` index + 1, end = last
-    ``<|tts_eos|>`` index (or sequence end when absent). Each position pairs
+    Over the full sequence (prompt + generated), start = last ``<|tts_bos|>``
+    index + 1, end = first ``<|tts_eos|>`` index at or after ``start`` (or
+    sequence end when absent), matching the remote text path's
+    ``split("<|tts_bos|>")[-1].split("<|tts_eos|>")[0]`` semantics. The
+    remote token-path ``tts_bound`` slices at the globally last
+    ``<|tts_eos|>``, so with a speech turn in the prompt history and the
+    current speech truncated before its own end marker, its end index falls
+    before ``start`` and the span comes back empty; scoping the search to the
+    current segment keeps the generated content instead. Each position pairs
     its token id with the thinker's last-layer hidden state at the same
     position. ``hidden_states_seq`` entry k covers full-sequence position
     ``prompt_len - 1 + k`` (prefill captures the last prompt position; decode
@@ -544,7 +550,11 @@ def build_talker_request(
         empty = torch.empty(0, dtype=torch.long)
         return {"tts_token_ids": empty, "tts_hidden": empty}
     start = tts_bos_indices[-1] + 1
-    end = tts_eos_indices[-1] if tts_eos_indices else len(full_sequence)
+    # Only an end marker inside the current segment may close the span: a
+    # history turn's <|tts_eos|> sits before the last <|tts_bos|>, and slicing
+    # at it would drop the truncated current speech (end < start → empty).
+    segment_eos = [i for i in tts_eos_indices if i >= start]
+    end = segment_eos[0] if segment_eos else len(full_sequence)
 
     hidden_base = prompt_len - 1  # full-sequence position of hidden_seq[0]
     if start < hidden_base:
