@@ -8,14 +8,14 @@
 # 默认：GPU 0，端口 30000，并发扫 1/2/4/8/16/32，只测速度
 bash scripts/baseline/run_minicpm_o_baseline.sh
 
-# 指定某张 A100（单机 8 张卡中任选 1 张）
+# 指定卡号（多卡机器才需要；单卡机器用默认即可）
 GPU=3 bash scripts/baseline/run_minicpm_o_baseline.sh
 
 # 冒烟：只跑 16 条、单点并发（先确认链路通）
-CONCURRENCY=1 MAX_SAMPLES=16 GPU=3 bash scripts/baseline/run_minicpm_o_baseline.sh
+CONCURRENCY=1 MAX_SAMPLES=16 bash scripts/baseline/run_minicpm_o_baseline.sh
 
 # 速度 + 质量（WER）：优化完用来证明没改坏音质
-WITH_Q=1 GPU=3 bash scripts/baseline/run_minicpm_o_baseline.sh
+WITH_Q=1 bash scripts/baseline/run_minicpm_o_baseline.sh
 ```
 
 国内首次跑需先设 HF 镜像（数据集自动下载）：
@@ -44,12 +44,12 @@ export HF_ENDPOINT=https://hf-mirror.com
 | thinker 配置 | max_seq 8192、`mem_fraction_static=0.55` | 同 |
 | talker 配置 | `mem_fraction_static=0.15` | 同 |
 | 线程 | `OMP_NUM_THREADS=4` | 同 |
-| 硬件 | **1× H100 SXM 80GB** | **1× A100 80GB**（单机 8 张卡中任选 1 张） |
+| 硬件 | **1× H100 SXM 80GB** | **1× A100 80GB**（单卡 DP1） |
 
 ## before/after 怎么用
 
-1. **改代码前**：`GPU=3 bash ...`，把 `results/minicpm_o_baseline_a100/` 整个目录改名存档（如 `results/baseline_before/`）。
-2. **改完代码**：同一张卡 `GPU=3 bash ...` 再跑一次。
+1. **改代码前**：`bash ...`，把 `results/minicpm_o_baseline_a100/` 整个目录改名存档（如 `results/baseline_before/`）。
+2. **改完代码**：同一张卡 `bash ...` 再跑一次。
 3. **对比**：
    ```bash
    diff <(grep -E "throughput|p50|TTFT" results/baseline_before/c16/run.log) \
@@ -61,7 +61,7 @@ export HF_ENDPOINT=https://hf-mirror.com
 ## 重要说明
 
 - **绝对数字不要直接和 #2273 比**：H100 比 A100 快，吞吐会低一截。价值在**你自己 before/after 同卡自洽**。
-- **单卡 DP1**：默认只占一张卡。不要为了"用满 8 卡"改多卡——会引入 TP/DP 变量，和 #2273 不可比。
+- **单卡 DP1**：默认只占一张卡。不要改多卡部署——会引入 TP/DP 变量，和 #2273 不可比。
 - **先冒烟再跑全量**：`CONCURRENCY=1 MAX_SAMPLES=16` 确认服务能起、请求能通，再放全量。
 - **OOM**：#2273 里 c8 后曾 OOM，他们按点重启服务。本脚本一个服务跑全程；若 OOM，按并发点拆成多次跑。
 - **首次运行要下载**：模型 `openbmb/MiniCPM-o-4_5`（数 GB）+ 数据集各下一次，之后走本地缓存。模型加载默认等 20 分钟（`--server-timeout 1200`），一般够。
