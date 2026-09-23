@@ -64,4 +64,6 @@ export HF_ENDPOINT=https://hf-mirror.com
 - **单卡 DP1**：默认只占一张卡。不要为了"用满 8 卡"改多卡——会引入 TP/DP 变量，和 #2273 不可比。
 - **先冒烟再跑全量**：`CONCURRENCY=1 MAX_SAMPLES=16` 确认服务能起、请求能通，再放全量。
 - **OOM**：#2273 里 c8 后曾 OOM，他们按点重启服务。本脚本一个服务跑全程；若 OOM，按并发点拆成多次跑。
+- **首次运行要下载**：模型 `openbmb/MiniCPM-o-4_5`（数 GB）+ 数据集各下一次，之后走本地缓存。模型加载默认等 20 分钟（`--server-timeout 1200`），一般够。
+- **WITH_Q=1 会额外下 ASR 模型**（默认 Qwen3 ASR）做 WER；纯速度基线不用开。
 - **Encoder cache 命中数不在本脚本里**：当前 `StageOutputCache` 没有 hit/miss 计数器。这是你做 Encoder caches 时要**在代码里加的埋点**（不是基线脚本的事）；加完后把计数从 `server.log` 摘出来，和本脚本的吞吐一起看。

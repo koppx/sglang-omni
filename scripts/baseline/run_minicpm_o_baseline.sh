@@ -82,6 +82,8 @@ SERVER_PID=$!
 
 cleanup() {
   echo "[baseline] stopping server (pid $SERVER_PID)"
+  # Kill the worker subtree first, then the main server, so no GPU memory leaks.
+  pkill -TERM -P "$SERVER_PID" 2>/dev/null || true
   kill "$SERVER_PID" 2>/dev/null || true
   wait "$SERVER_PID" 2>/dev/null || true
 }
