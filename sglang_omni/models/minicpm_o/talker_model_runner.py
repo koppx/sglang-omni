@@ -54,7 +54,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
                     device=self.model.emb_code.weight.device,
                 )
                 parts.append(self.model.emb_code(generated))
-        input_embeds = torch.cat(parts, dim=0).to(
+        input_embeds = (parts[0] if len(parts) == 1 else torch.cat(parts, dim=0)).to(
             device=forward_batch.input_ids.device,
             dtype=self.model.emb_code.weight.dtype,
         )

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -11,6 +12,7 @@ import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from torch import nn
 
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.minicpm_o.components.sglang_talker import (
     MiniCPMOTalkerForCausalLM,
     MiniCPMTTSProjector,
@@ -76,6 +78,30 @@ def test_condition_length_mismatch_raises():
     model = _bare_model()
     with pytest.raises(ValueError, match="length mismatch"):
         model.build_condition_embeddings(torch.tensor([1, 2]), torch.randn(3, LLM_DIM))
+
+
+def test_prefill_reuses_single_condition_slice() -> None:
+    runner = MiniCPMOTalkerModelRunner.__new__(MiniCPMOTalkerModelRunner)
+    runner.model = SimpleNamespace(emb_code=nn.Embedding(16, HIDDEN))
+    condition = torch.randn(7, HIDDEN)
+    forward_batch = SimpleNamespace(
+        input_ids=torch.zeros(4, dtype=torch.long), replace_embeds=None
+    )
+    request = SimpleNamespace(
+        data=SimpleNamespace(
+            prefill_input_embeds=condition,
+            req=SimpleNamespace(
+                prefix_indices=[0, 1], extend_range=SimpleNamespace(length=4)
+            ),
+        )
+    )
+
+    runner.before_prefill(forward_batch, None, [request])
+
+    prefill_inputs = get_omni_prefill_inputs(forward_batch)
+    assert prefill_inputs is not None
+    assert torch.equal(prefill_inputs.input_embeds, condition[2:6])
+    assert prefill_inputs.input_embeds.data_ptr() == condition[2:6].data_ptr()
 
 
 @dataclass(kw_only=True)

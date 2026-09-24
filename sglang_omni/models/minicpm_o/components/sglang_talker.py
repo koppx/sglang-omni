@@ -90,11 +90,10 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
         """Return (T+2, hidden) condition embeddings, including boundary tokens."""
         device = self.emb_text.weight.device
         dtype = self.emb_text.weight.dtype
-        boundary = self.emb_text(
-            torch.tensor(
-                [self.text_eos_token_id, self.audio_bos_token_id],
-                device=device,
-                dtype=torch.long,
+        boundary = torch.stack(
+            (
+                self.emb_text.weight[self.text_eos_token_id],
+                self.emb_text.weight[self.audio_bos_token_id],
             )
         )
         if tts_token_ids.numel() == 0:
