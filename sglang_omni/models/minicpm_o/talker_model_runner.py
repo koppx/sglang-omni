@@ -90,15 +90,12 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
                     continue
                 else:
                     frequencies = Counter(
-                        token_id
-                        for token_id in map(
-                            int, request.data.req.output_ids[-REP_PENALTY_WINDOW:]
-                        )
-                        if 0 <= token_id < vocabulary_size
+                        request.data.req.output_ids[-REP_PENALTY_WINDOW:]
                     )
                     for token_id, frequency in frequencies.items():
-                        token_coordinates.append((row_index, token_id))
-                        penalty_frequencies.append((penalty, frequency))
+                        if 0 <= token_id < vocabulary_size:
+                            token_coordinates.append((row_index, token_id))
+                            penalty_frequencies.append((penalty, frequency))
 
             if not token_coordinates:
                 return
