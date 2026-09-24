@@ -25,6 +25,12 @@ from sglang_omni.scheduling.types import SchedulerRequest
 BASELINE_REVISION = "12f7b6670cc236b63cca4f53a9a495b9aea93cf5"
 PENALTY_WINDOW = 16
 BENCHMARK_SEED = 2284
+RANDOM_HISTORY_LENGTHS = {
+    "mixed_short": PENALTY_WINDOW // 4,
+    "mixed_full": PENALTY_WINDOW,
+    "mixed_long": PENALTY_WINDOW * 2,
+    "disabled": PENALTY_WINDOW,
+}
 
 
 @dataclass(kw_only=True)
@@ -151,7 +157,12 @@ def main() -> None:
     cases: list[dict[str, str | int | float | list[float]]] = []
     with torch.inference_mode():
         for batch_size in arguments.batch_sizes:
-            for history_kind in ("empty", "repeated", "distinct", "mixed", "disabled"):
+            for history_kind in (
+                "empty",
+                "repeated",
+                "distinct",
+                *RANDOM_HISTORY_LENGTHS,
+            ):
                 requests: list[SchedulerRequest] = []
                 for row_index in range(batch_size):
                     if history_kind == "empty":
@@ -166,7 +177,7 @@ def main() -> None:
                     else:
                         history = [
                             generator.randrange(arguments.vocab_size)
-                            for _ in range(row_index % 33)
+                            for _ in range(RANDOM_HISTORY_LENGTHS[history_kind])
                         ]
                     penalty = (
                         1.0
