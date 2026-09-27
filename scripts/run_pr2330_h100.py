@@ -6,14 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 
@@ -56,9 +52,6 @@ def main() -> None:
     parser.add_argument(
         "--output", type=Path, required=True, help="New results directory"
     )
-    parser.add_argument(
-        "--asr-model", type=Path, help="Local ASR checkpoint for quality scoring"
-    )
     parser.add_argument("--gpu", default="0", help="Physical H100 index or UUID")
     parser.add_argument("--port", type=int, default=18000)
     parser.add_argument("--repeats", type=int, default=4)
@@ -79,10 +72,6 @@ def main() -> None:
         parser.error("The snapshot needs en/meta.lst and zh/meta.lst")
     if arguments.repeats < 1 or not 0 < arguments.port < 65536:
         parser.error("--repeats and --port must be positive")
-    if not arguments.smoke_only and arguments.asr_model is None:
-        parser.error("--asr-model is required for the full experiment")
-    if arguments.asr_model is not None and not arguments.asr_model.is_dir():
-        parser.error("--asr-model must be a local checkpoint directory")
     if output.exists():
         parser.error(f"Output already exists: {output}")
     if subprocess.run(
@@ -264,131 +253,8 @@ def main() -> None:
             source,
             environment,
         )
-        quality_points = {
-            label: output / "full" / f"r1-c16-{label}" / "client"
-            for label in ("baseline", "candidate")
-        }
-        for point in quality_points.values():
-            records = [
-                json.loads(line)
-                for line in (point / "measured.jsonl").read_text().splitlines()
-            ]
-            generated = [
-                {
-                    "sample_id": record["sample_id"],
-                    "target_text": record["target_text"],
-                    "wav_path": str(point / "measured" / f"{index:04d}.wav"),
-                    "is_success": not record["error"],
-                    "latency_s": record["ready_s"],
-                    "audio_duration_s": record["audio_s"],
-                    "error": record["error"],
-                }
-                for index, record in enumerate(records)
-            ]
-            (point / "generated.json").write_text(json.dumps(generated, indent=2))
-
-        asr_model = arguments.asr_model.resolve()
-        asr_command = [
-            sys.executable,
-            "-m",
-            "sglang_omni.cli",
-            "serve",
-            "--model-path",
-            str(asr_model),
-            "--model-name",
-            str(asr_model),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(arguments.port),
-        ]
-        (output / "asr-command.json").write_text(json.dumps(asr_command, indent=2))
-        with (output / "asr-server.log").open("x") as log:
-            asr_server = subprocess.Popen(
-                asr_command,
-                cwd=source,
-                env=environment,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            try:
-                deadline = time.monotonic() + 1200
-                while True:
-                    if asr_server.poll() is not None:
-                        raise RuntimeError("ASR server exited; inspect asr-server.log")
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("ASR server startup timed out")
-                    try:
-                        with urllib.request.urlopen(
-                            f"http://127.0.0.1:{arguments.port}/v1/models", timeout=2
-                        ) as response:
-                            if response.status == 200:
-                                break
-                    except (urllib.error.URLError, TimeoutError):
-                        time.sleep(1)
-                for label, point in quality_points.items():
-                    run_stage(
-                        f"quality-{label}-transcribe",
-                        [
-                            sys.executable,
-                            "-m",
-                            "benchmarks.eval.benchmark_omni_seedtts",
-                            "--transcribe-only",
-                            "--model",
-                            "MiniCPM-o-4_5",
-                            "--meta",
-                            str(meta),
-                            "--lang",
-                            "en",
-                            "--output-dir",
-                            str(point),
-                            "--port",
-                            str(arguments.port),
-                            "--asr-model-path",
-                            str(asr_model),
-                        ],
-                        output,
-                        source,
-                        environment,
-                    )
-            finally:
-                try:
-                    os.killpg(asr_server.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    asr_server.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    os.killpg(asr_server.pid, signal.SIGKILL)
-                    asr_server.wait(timeout=20)
-        for label, point in quality_points.items():
-            for mode in ("similarity", "utmos"):
-                run_stage(
-                    f"quality-{label}-{mode}",
-                    [
-                        sys.executable,
-                        "-m",
-                        "benchmarks.eval.benchmark_omni_seedtts",
-                        f"--{mode}-only",
-                        "--model",
-                        "MiniCPM-o-4_5",
-                        "--meta",
-                        str(meta),
-                        "--lang",
-                        "en",
-                        "--output-dir",
-                        str(point),
-                        "--device",
-                        "cuda:0",
-                    ],
-                    output,
-                    source,
-                    environment,
-                )
     print(f"Performance experiment complete: {output / 'full/comparison.md'}")
-    print("Quality scores are saved beside the selected c16 audio cohorts.")
-    print("Listen to matched audio before accepting a speedup.")
+    print("Generated WAVs are retained for a separate quality review.")
 
 
 if __name__ == "__main__":
