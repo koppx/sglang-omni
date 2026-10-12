@@ -607,7 +607,12 @@ def test_stage_materializes_fenced_same_process_payload() -> None:
         relay = FakeRelay()
         control_plane = RecordingStageControlPlane()
         receiver_scheduler = FakeScheduler()
-        receiver = make_stage(name="talker", scheduler=receiver_scheduler, relay=relay)
+        receiver = make_stage(
+            name="talker",
+            scheduler=receiver_scheduler,
+            relay=relay,
+            endpoints={"thinker": "inproc://thinker-ack"},
+        )
         sender = make_stage(
             name="thinker",
             endpoints={"talker": "inproc://talker"},
