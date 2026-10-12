@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import math
 import os
+import random
 import shlex
+import shutil
 import signal
 import socket
 import statistics
@@ -23,7 +26,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import FrameType
 
+if sys.version_info < (3, 10):
+    raise RuntimeError("Start this script with Python 3.10 or newer")
+else:
+    pass
+
 BASELINE_REVISION = "7f78bf3dc5c3053d6eb270764eb19232b617dec4"
+MODEL_REVISION = "503e754207c94da6bb26850b4469f367c9ea3582"
 UNIT_FILES = [
     f"tests/unit_test/minicpm_o/{name}.py"
     for name in (
@@ -50,6 +59,61 @@ METRICS = [
     "audio_throughput_s_per_s",
     "audio_duration_mean_s",
 ]
+DOWNLOAD = """
+import hashlib
+import json
+import shutil
+import sys
+from pathlib import Path
+from huggingface_hub import snapshot_download
+from benchmarks.dataset.prepare import SEEDTTS_DATASET_ID, SEEDTTS_DATASET_REVISION
+from benchmarks.dataset.seedtts import load_seedtts_samples
+settings_path, destination = sys.argv[1:]
+settings = json.loads(Path(settings_path).read_text())
+manifest = {}
+if settings["meta"]:
+    manifest["meta"] = settings["meta"]
+    manifest["dataset_source"] = "local"
+else:
+    directory = Path(settings["cache_dir"]) / "seedtts" / SEEDTTS_DATASET_REVISION / settings["lang"]
+    directory.mkdir(parents=True, exist_ok=True)
+    metadata = directory / "meta.lst"
+    if not metadata.exists():
+        samples = load_seedtts_samples(
+            SEEDTTS_DATASET_ID, split=settings["lang"], revision=SEEDTTS_DATASET_REVISION
+        )
+        rows = []
+        for sample in samples:
+            source = Path(sample.ref_audio)
+            audio_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+            audio_path = directory / (audio_hash + source.suffix)
+            shutil.copyfile(source, audio_path)
+            fields = [sample.sample_id, sample.ref_text, str(audio_path), sample.target_text]
+            if any("|" in field or "\\n" in field or "\\r" in field for field in fields):
+                raise ValueError(f"Unsupported metadata field: {sample.sample_id}")
+            else:
+                rows.append("|".join(fields))
+        temporary = directory / "meta.lst.tmp"
+        temporary.write_text("\\n".join(rows) + "\\n")
+        temporary.replace(metadata)
+    else:
+        pass
+    manifest.update(
+        meta=str(metadata), dataset_source=SEEDTTS_DATASET_ID,
+        dataset_revision=SEEDTTS_DATASET_REVISION, split=settings["lang"]
+    )
+if settings["checkpoint"]:
+    manifest.update(checkpoint=settings["checkpoint"], model_source="local")
+else:
+    checkpoint = snapshot_download(
+        "openbmb/MiniCPM-o-4_5", revision=settings["model_revision"]
+    )
+    manifest.update(
+        checkpoint=checkpoint, model_source="openbmb/MiniCPM-o-4_5",
+        model_revision=settings["model_revision"]
+    )
+Path(destination).write_text(json.dumps(manifest, indent=2))
+"""
 PROBE = """
 import hashlib
 import importlib.metadata
@@ -73,6 +137,7 @@ assert len({sample.sample_id for sample in samples}) == len(samples)
 assert not {sample.sample_id for sample in samples} & {sample.sample_id for sample in warmup}
 assert not {sample.target_text for sample in samples} & {sample.target_text for sample in warmup}
 assert not {str(Path(sample.ref_audio).resolve()) for sample in samples} & {str(Path(sample.ref_audio).resolve()) for sample in warmup}
+assert not {hashlib.sha256(Path(sample.ref_audio).read_bytes()).hexdigest() for sample in samples} & {hashlib.sha256(Path(sample.ref_audio).read_bytes()).hexdigest() for sample in warmup}
 digest = hashlib.sha256()
 for sample in samples + warmup:
     digest.update(json.dumps(vars(sample), sort_keys=True).encode())
@@ -84,6 +149,224 @@ Path(destination).write_text(json.dumps({
     "gpu": torch.cuda.get_device_name(0), "source": sglang_omni.__file__
 }, indent=2))
 """
+
+
+@dataclass(kw_only=True)
+class MetadataRow:
+    sample_id: str
+    ref_text: str
+    ref_audio: str
+    target_text: str
+    audio_sha256: str
+
+    @property
+    def line(self) -> str:
+        return "|".join(
+            (self.sample_id, self.ref_text, self.ref_audio, self.target_text)
+        )
+
+
+def read_metadata(path: Path) -> list[MetadataRow]:
+    rows: list[MetadataRow] = []
+    sample_ids: set[str] = set()
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        else:
+            fields = line.strip().split("|")
+        if len(fields) != 4 or any(not value.strip() for value in fields):
+            raise ValueError(f"Expected four nonempty fields: {path}:{number}")
+        elif fields[0] in sample_ids:
+            raise ValueError(f"Duplicate sample ID: {path}:{number}")
+        else:
+            sample_ids.add(fields[0])
+        audio_path = (path.parent / fields[2]).resolve(strict=True)
+        audio_bytes = audio_path.read_bytes()
+        if not audio_bytes:
+            raise ValueError(f"Empty reference audio: {audio_path}")
+        else:
+            rows.append(
+                MetadataRow(
+                    sample_id=fields[0],
+                    ref_text=fields[1],
+                    ref_audio=str(audio_path),
+                    target_text=fields[3],
+                    audio_sha256=hashlib.sha256(audio_bytes).hexdigest(),
+                )
+            )
+    return rows
+
+
+def split_metadata(settings: argparse.Namespace, output: Path) -> None:
+    samples = read_metadata(Path(settings.meta))
+    if settings.warmup_meta:
+        warmup = read_metadata(Path(settings.warmup_meta))[: settings.warmup_samples]
+        measurement = samples
+        policy = "external-warmup"
+    elif len(samples) <= settings.warmup_samples + settings.smoke_samples:
+        raise ValueError("Dataset is too small for disjoint warmup and full trials")
+    else:
+        selected = set(
+            random.Random(settings.seed).sample(
+                range(len(samples)), settings.warmup_samples
+            )
+        )
+        warmup = [sample for i, sample in enumerate(samples) if i in selected]
+        measurement = [sample for i, sample in enumerate(samples) if i not in selected]
+        policy = "deterministic-holdout"
+    warmup_ids = {sample.sample_id for sample in warmup}
+    warmup_texts = {sample.target_text for sample in warmup}
+    warmup_audio = {sample.audio_sha256 for sample in warmup}
+    disjoint = [
+        sample
+        for sample in measurement
+        if sample.sample_id not in warmup_ids
+        and sample.target_text not in warmup_texts
+        and sample.audio_sha256 not in warmup_audio
+    ]
+    excluded = len(measurement) - len(disjoint)
+    if settings.warmup_meta and excluded:
+        raise ValueError(
+            "External warmup overlaps measurement IDs, text or audio bytes"
+        )
+    elif (
+        len(warmup) != settings.warmup_samples
+        or len(disjoint) <= settings.smoke_samples
+    ):
+        raise ValueError("Insufficient samples after removing warmup overlap")
+    else:
+        pass
+    for name, rows in (("measurement", disjoint), ("warmup", warmup)):
+        (output / f"{name}.lst").write_text(
+            "\n".join(sample.line for sample in rows) + "\n"
+        )
+    fingerprint = hashlib.sha256()
+    for sample in disjoint + warmup:
+        fingerprint.update(
+            json.dumps(
+                [
+                    sample.sample_id,
+                    sample.ref_text,
+                    sample.target_text,
+                    sample.audio_sha256,
+                ],
+                ensure_ascii=False,
+            ).encode()
+        )
+    settings.resources.update(
+        split_policy=policy,
+        split_seed=settings.seed,
+        source_samples=len(samples),
+        warmup_samples=len(warmup),
+        measurement_samples=len(disjoint),
+        extra_overlap_removed=excluded,
+        content_sha256=fingerprint.hexdigest(),
+        warmup_ids=[sample.sample_id for sample in warmup],
+        measurement_ids=[sample.sample_id for sample in disjoint],
+    )
+    settings.meta = str(output / "measurement.lst")
+    settings.warmup_meta = str(output / "warmup.lst")
+    (output / "resources.json").write_text(json.dumps(settings.resources, indent=2))
+
+
+def prepare_environment(
+    settings: argparse.Namespace,
+    repository: Path,
+    environment: dict[str, str],
+    output: Path,
+) -> None:
+    if sys.platform != "linux":
+        raise RuntimeError("Linux with an NVIDIA CUDA driver is required")
+    elif shutil.which("nvidia-smi") is None:
+        raise RuntimeError("nvidia-smi is missing; provision an NVIDIA CUDA host first")
+    else:
+        execute(
+            ["nvidia-smi", "-i", settings.gpu],
+            repository,
+            environment,
+            output / "gpu.log",
+            30,
+        )
+    if settings.use_current_env:
+        settings.python = sys.executable
+    else:
+        cache = Path(settings.cache_dir)
+        cache.mkdir(parents=True, exist_ok=True)
+        uv_path = shutil.which("uv")
+        if uv_path is None:
+            bootstrap = cache / "bootstrap"
+            execute(
+                [sys.executable, "-m", "venv", str(bootstrap)],
+                repository,
+                environment,
+                output / "bootstrap-venv.log",
+                120,
+            )
+            execute(
+                [
+                    str(bootstrap / "bin/python"),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "uv",
+                ],
+                repository,
+                environment,
+                output / "bootstrap-uv.log",
+                settings.setup_timeout_seconds,
+            )
+            uv_path = str(bootstrap / "bin/uv")
+        else:
+            pass
+        virtualenv = cache / "environments" / settings.candidate
+        if not (virtualenv / "bin/python").is_file():
+            execute(
+                [uv_path, "venv", "--python", "3.12", "--seed", str(virtualenv)],
+                repository,
+                environment,
+                output / "environment-create.log",
+                settings.setup_timeout_seconds,
+            )
+        else:
+            pass
+        settings.python = str(virtualenv / "bin/python")
+        execute(
+            [
+                uv_path,
+                "pip",
+                "install",
+                "--python",
+                settings.python,
+                "--prerelease=allow",
+                "-e",
+                f"{repository}[minicpm-o]",
+            ],
+            repository,
+            environment,
+            output / "environment-install.log",
+            settings.setup_timeout_seconds,
+        )
+    environment["PATH"] = (
+        str(Path(settings.python).parent) + os.pathsep + environment["PATH"]
+    )
+    environment.pop("PYTHONHOME", None)
+    environment["VIRTUAL_ENV"] = str(Path(settings.python).parent.parent)
+    execute(
+        [
+            settings.python,
+            "-c",
+            "import importlib.metadata; import torch; "
+            "assert torch.__version__.split('+')[0] == '2.13.0', torch.__version__; "
+            "assert importlib.metadata.version('sglang') == '0.5.21'; "
+            "assert torch.cuda.is_available() and torch.cuda.device_count() == 1, "
+            "'The selected GPU must be visible to the installed CUDA runtime'",
+        ],
+        repository,
+        environment,
+        output / "environment-check.log",
+        120,
+    )
 
 
 @dataclass(kw_only=True)
@@ -240,6 +523,10 @@ def write_report(
         "",
         f"Status: **{status}**",
         "",
+        f"Resources: {output / 'resources.json'} (source, revisions, split and content fingerprint).",
+        f"Measurement samples: {vars(settings).get('resources', {}).get('measurement_samples', 'pending')}; "
+        f"warmup samples: {settings.warmup_samples}.",
+        "",
         "Generation checks only: audio quality, full-model tensor parity and handoff device latency remain unverified.",
         "Latency is non-streaming request completion, not incremental audio first-chunk latency.",
         "Smoke timings include COMM_TRACE; use only full trials for performance comparisons.",
@@ -325,7 +612,7 @@ def run_trial(
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", settings.port))
     command = [
-        sys.executable,
+        settings.python,
         "-m",
         "sglang_omni.cli",
         "serve",
@@ -375,7 +662,7 @@ def run_trial(
                 except (urllib.error.URLError, TimeoutError):
                     time.sleep(1)
             benchmark = [
-                sys.executable,
+                settings.python,
                 "-m",
                 "benchmarks.eval.benchmark_omni_seedtts",
                 "--host",
@@ -469,6 +756,7 @@ def run(settings: argparse.Namespace) -> None:
     repository = Path(__file__).resolve().parents[1]
     output = Path(settings.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
+    print(f"Results: {output}", flush=True)
     environment = dict(
         os.environ,
         CUDA_VISIBLE_DEVICES=settings.gpu,
@@ -478,11 +766,13 @@ def run(settings: argparse.Namespace) -> None:
     environment.pop("CUDA_LAUNCH_BLOCKING", None)
     environment.pop("PYTHONPATH", None)
     environment.pop("PYTHONOPTIMIZE", None)
+    environment.pop("PYTHONHOME", None)
     environment.pop("PYTEST_ADDOPTS", None)
     environment["SGLANG_OMNI_COMM_TRACE"] = "0"
     trials: list[Trial] = []
     write_report(output, "RUNNING: preflight", trials, settings)
     checkouts: list[Path] = []
+    cache_lock: int | None = None
     try:
         settings.candidate = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=repository, text=True
@@ -495,13 +785,71 @@ def run(settings: argparse.Namespace) -> None:
             raise RuntimeError("Commit tracked changes before validation")
         else:
             pass
-        settings.checkpoint = str(Path(settings.checkpoint).resolve(strict=True))
-        settings.meta = str(Path(settings.meta).resolve(strict=True))
-        settings.warmup_meta = str(Path(settings.warmup_meta).resolve(strict=True))
+        for name in ("checkpoint", "meta", "warmup_meta"):
+            value = vars(settings)[name]
+            if value:
+                vars(settings)[name] = str(
+                    Path(value).expanduser().resolve(strict=True)
+                )
+            else:
+                pass
+        settings.cache_dir = str(Path(settings.cache_dir).expanduser().resolve())
+        Path(settings.cache_dir).mkdir(parents=True, exist_ok=True)
+        cache_lock = os.open(
+            Path(settings.cache_dir) / "run.lock", os.O_CREAT | os.O_RDWR, 0o600
+        )
+        try:
+            fcntl.flock(cache_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                "Another run is using this cache; select a separate --cache-dir"
+            ) from error
+        environment.setdefault("HF_HOME", str(Path(settings.cache_dir) / "huggingface"))
+        environment.setdefault("UV_CACHE_DIR", str(Path(settings.cache_dir) / "uv"))
+        environment.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+        environment.setdefault("UV_HTTP_TIMEOUT", "120")
+        write_report(output, "RUNNING: preparing Python environment", trials, settings)
+        prepare_environment(settings, repository, environment, output)
+        write_report(output, "RUNNING: preparing model and dataset", trials, settings)
+        (output / "resource-settings.json").write_text(
+            json.dumps(vars(settings), indent=2)
+        )
+        execute(
+            [
+                settings.python,
+                "-c",
+                DOWNLOAD,
+                str(output / "resource-settings.json"),
+                str(output / "downloads.json"),
+            ],
+            repository,
+            environment,
+            output / "resources.log",
+            settings.setup_timeout_seconds,
+        )
+        settings.resources = json.loads((output / "downloads.json").read_text())
+        settings.checkpoint = settings.resources["checkpoint"]
+        settings.meta = settings.resources["meta"]
+        split_metadata(settings, output)
         config = Path(settings.checkpoint) / "config.json"
         settings.checkpoint_config_sha256 = hashlib.sha256(
             config.read_bytes()
         ).hexdigest()
+        if subprocess.run(
+            ["git", "cat-file", "-e", f"{BASELINE_REVISION}^{{commit}}"],
+            cwd=repository,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode:
+            execute(
+                ["git", "fetch", "--no-tags", "origin", BASELINE_REVISION],
+                repository,
+                environment,
+                output / "baseline-fetch.log",
+                settings.setup_timeout_seconds,
+            )
+        else:
+            pass
         with tempfile.TemporaryDirectory(prefix="minicpm-handoff-") as temporary:
             try:
                 for arm, revision in (
@@ -521,7 +869,7 @@ def run(settings: argparse.Namespace) -> None:
                 environment["PYTHONPATH"] = str(candidate)
                 execute(
                     [
-                        sys.executable,
+                        settings.python,
                         "-c",
                         PROBE,
                         str(candidate),
@@ -542,7 +890,7 @@ def run(settings: argparse.Namespace) -> None:
                 ]
                 trials = trial_plan(sample_count, settings)
                 execute(
-                    [sys.executable, "-m", "pip", "freeze"],
+                    [settings.python, "-m", "pip", "freeze"],
                     candidate,
                     environment,
                     output / "packages.log",
@@ -564,7 +912,7 @@ def run(settings: argparse.Namespace) -> None:
                     write_report(output, f"RUNNING: {label}", trials, settings)
                     execute(
                         [
-                            sys.executable,
+                            settings.python,
                             "-m",
                             "pytest",
                             *targets,
@@ -588,7 +936,7 @@ def run(settings: argparse.Namespace) -> None:
                         )
                         execute(
                             [
-                                sys.executable,
+                                settings.python,
                                 "-m",
                                 "pytest",
                                 *UNIT_FILES,
@@ -641,25 +989,43 @@ def run(settings: argparse.Namespace) -> None:
             output, f"FAILED: {type(error).__name__}: {error}", trials, settings
         )
         raise
+    finally:
+        if cache_lock is not None:
+            os.close(cache_lock)
+        else:
+            pass
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--checkpoint",
-        required=True,
-        help="Local immutable MiniCPM-o checkpoint directory",
+        help="Local immutable checkpoint; default: download the pinned MiniCPM-o model",
     )
-    parser.add_argument("--meta", required=True, help="Local full SeedTTS meta.lst")
+    parser.add_argument(
+        "--meta", help="Local SeedTTS meta.lst; default: download pinned Arrow data"
+    )
     parser.add_argument(
         "--warmup-meta",
-        required=True,
-        help="Disjoint local SeedTTS meta.lst, at least 16 rows",
+        help="Independent local warmup metadata; default: hold out 16 rows from the dataset",
     )
     parser.add_argument(
         "--output",
-        required=True,
+        default=f"handoff-results/{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}",
         help="New result directory; existing paths are never overwritten",
+    )
+    parser.add_argument(
+        "--cache-dir", default=str(Path.home() / ".cache/sglang-omni/handoff")
+    )
+    parser.add_argument(
+        "--use-current-env",
+        action="store_true",
+        help="Use the current Python environment without installing dependencies",
+    )
+    parser.add_argument(
+        "--model-revision",
+        default=MODEL_REVISION,
+        help="Immutable model commit to download",
     )
     parser.add_argument("--gpu", default="0", help="One physical GPU index or UUID")
     parser.add_argument("--port", type=int, default=18080)
@@ -673,6 +1039,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--startup-timeout-seconds", type=int, default=1200)
     parser.add_argument("--trial-timeout-seconds", type=int, default=7200)
+    parser.add_argument("--setup-timeout-seconds", type=int, default=14400)
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -686,18 +1053,34 @@ def main() -> None:
         settings.repeats,
         settings.startup_timeout_seconds,
         settings.trial_timeout_seconds,
+        settings.setup_timeout_seconds,
         *settings.concurrencies,
     ]
     if min(positive) <= 0 or not 0 < settings.port < 65536 or "," in settings.gpu:
         parser.error(
             "Counts/timeouts must be positive; select one GPU and a valid port"
         )
+    elif len(settings.model_revision) != 40 or any(
+        character not in "0123456789abcdef" for character in settings.model_revision
+    ):
+        parser.error("--model-revision must be a full lowercase commit SHA")
     elif settings.dry_run:
         print(
             json.dumps(
                 {
                     "baseline": BASELINE_REVISION,
-                    "full_samples": "all metadata rows",
+                    "environment": (
+                        "current"
+                        if settings.use_current_env
+                        else "automatic Python 3.12 virtualenv"
+                    ),
+                    "checkpoint": settings.checkpoint
+                    or f"openbmb/MiniCPM-o-4_5@{settings.model_revision}",
+                    "dataset": settings.meta or "pinned SeedTTS Arrow snapshot",
+                    "warmup": settings.warmup_meta
+                    or f"hold out {settings.warmup_samples} rows with seed {settings.seed}",
+                    "full_samples": "remaining disjoint rows; exact count recorded after preparation",
+                    "output": settings.output,
                     "trials": [asdict(trial) for trial in trial_plan(0, settings)],
                 },
                 indent=2,
