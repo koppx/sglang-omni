@@ -45,6 +45,7 @@ UNIT_FILES = [
 ] + [
     "tests/unit_test/pipeline/test_stage.py",
     "tests/unit_test/pipeline/test_payload_device_restore.py",
+    "tests/unit_test/benchmarks/test_minicpm_handoff.py",
 ]
 GPU_CASES = [
     f"{UNIT_FILES[1]}::test_gpu_hidden_survives_graph_replay_on_another_stream",
@@ -269,6 +270,52 @@ def split_metadata(settings: argparse.Namespace, output: Path) -> None:
     (output / "resources.json").write_text(json.dumps(settings.resources, indent=2))
 
 
+def check_gpu_idle(gpu: str, log_path: Path, *, max_idle_memory_mib: int) -> None:
+    """Refuse active or unobservable GPUs before launching CUDA work."""
+    if max_idle_memory_mib < 0:
+        raise ValueError("max_idle_memory_mib must be nonnegative")
+    else:
+        pass
+    observations: dict[str, str] = {}
+    with log_path.open("w") as log:
+        for name, query in (
+            ("processes", "--query-compute-apps=pid"),
+            ("activity", "--query-gpu=memory.used,utilization.gpu"),
+        ):
+            command = ["nvidia-smi", "-i", gpu, query, "--format=csv,noheader,nounits"]
+            log.write(f"command: {shlex.join(command)}\n")
+            log.flush()
+            observation = subprocess.run(
+                command, capture_output=True, text=True, timeout=30, check=False
+            )
+            log.write(observation.stdout)
+            log.write(observation.stderr)
+            if observation.returncode != 0 or observation.stderr.strip():
+                raise RuntimeError(f"Cannot verify GPU {gpu} is idle: {log_path}")
+            else:
+                observations[name] = observation.stdout.strip()
+        if observations["processes"]:
+            raise RuntimeError(
+                f"GPU {gpu} has compute processes or unknown state: {log_path}"
+            )
+        else:
+            pass
+        fields = observations["activity"].split(",")
+        if len(fields) != 2 or not all(value.strip().isdigit() for value in fields):
+            raise RuntimeError(f"Invalid GPU activity report for {gpu}: {log_path}")
+        else:
+            memory_used_mib, utilization_percent = (
+                int(value.strip()) for value in fields
+            )
+        if memory_used_mib > max_idle_memory_mib or utilization_percent != 0:
+            raise RuntimeError(
+                f"GPU {gpu} is not idle: memory={memory_used_mib} MiB, "
+                f"utilization={utilization_percent}%; {log_path}"
+            )
+        else:
+            pass
+
+
 def prepare_environment(
     settings: argparse.Namespace,
     repository: Path,
@@ -280,12 +327,10 @@ def prepare_environment(
     elif shutil.which("nvidia-smi") is None:
         raise RuntimeError("nvidia-smi is missing; provision an NVIDIA CUDA host first")
     else:
-        execute(
-            ["nvidia-smi", "-i", settings.gpu],
-            repository,
-            environment,
-            output / "gpu.log",
-            30,
+        check_gpu_idle(
+            settings.gpu,
+            output / "gpu-admission.log",
+            max_idle_memory_mib=settings.max_idle_memory_mib,
         )
     if settings.use_current_env:
         settings.python = sys.executable
@@ -352,6 +397,11 @@ def prepare_environment(
     )
     environment.pop("PYTHONHOME", None)
     environment["VIRTUAL_ENV"] = str(Path(settings.python).parent.parent)
+    check_gpu_idle(
+        settings.gpu,
+        output / "gpu-admission-environment-check.log",
+        max_idle_memory_mib=settings.max_idle_memory_mib,
+    )
     execute(
         [
             settings.python,
@@ -604,6 +654,11 @@ def run_trial(
 ) -> None:
     directory = output / trial.name
     directory.mkdir()
+    check_gpu_idle(
+        settings.gpu,
+        directory / "gpu-admission.log",
+        max_idle_memory_mib=settings.max_idle_memory_mib,
+    )
     server_environment = dict(
         environment,
         PYTHONPATH=str(checkout),
@@ -867,6 +922,11 @@ def run(settings: argparse.Namespace) -> None:
                     checkouts.append(checkout)
                 baseline, candidate = checkouts
                 environment["PYTHONPATH"] = str(candidate)
+                check_gpu_idle(
+                    settings.gpu,
+                    output / "gpu-admission-preflight.log",
+                    max_idle_memory_mib=settings.max_idle_memory_mib,
+                )
                 execute(
                     [
                         settings.python,
@@ -910,6 +970,11 @@ def run(settings: argparse.Namespace) -> None:
                     ],
                 ):
                     write_report(output, f"RUNNING: {label}", trials, settings)
+                    check_gpu_idle(
+                        settings.gpu,
+                        output / f"gpu-admission-{label}.log",
+                        max_idle_memory_mib=settings.max_idle_memory_mib,
+                    )
                     execute(
                         [
                             settings.python,
@@ -933,6 +998,11 @@ def run(settings: argparse.Namespace) -> None:
                     if trial.phase == "full" and not settings.full_regression_done:
                         write_report(
                             output, "RUNNING: full unit regression", trials, settings
+                        )
+                        check_gpu_idle(
+                            settings.gpu,
+                            output / "gpu-admission-unit-full.log",
+                            max_idle_memory_mib=settings.max_idle_memory_mib,
                         )
                         execute(
                             [
@@ -1028,6 +1098,12 @@ def main() -> None:
         help="Immutable model commit to download",
     )
     parser.add_argument("--gpu", default="0", help="One physical GPU index or UUID")
+    parser.add_argument(
+        "--max-idle-memory-mib",
+        type=int,
+        default=256,
+        help="Admission ceiling for driver/display memory; compute processes are always rejected",
+    )
     parser.add_argument("--port", type=int, default=18080)
     parser.add_argument("--lang", choices=("en", "zh"), default="en")
     parser.add_argument("--smoke-samples", type=int, default=8)
@@ -1060,6 +1136,8 @@ def main() -> None:
         parser.error(
             "Counts/timeouts must be positive; select one GPU and a valid port"
         )
+    elif settings.max_idle_memory_mib < 0:
+        parser.error("--max-idle-memory-mib must be nonnegative")
     elif len(settings.model_revision) != 40 or any(
         character not in "0123456789abcdef" for character in settings.model_revision
     ):

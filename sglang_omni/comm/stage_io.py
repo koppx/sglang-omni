@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import logging
+import math
 import pickle
 from dataclasses import fields, is_dataclass
 from multiprocessing.reduction import ForkingPickler
@@ -32,6 +34,9 @@ from sglang_omni.proto.messages import (
     StageDataRef,
 )
 from sglang_omni.relay.base import Relay, RelayOperation
+
+logger = logging.getLogger(__name__)
+PENDING_IPC_READS: set[asyncio.Task[StagePayload]] = set()
 
 
 class StageMessageSender(Protocol):
@@ -280,12 +285,55 @@ def is_direct_cuda_ipc_payload_ref(value: object) -> bool:
 
 async def read_direct_cuda_ipc_payload(
     data_ref: dict[str, object] | StageDataRef,
+    *,
+    timeout_seconds: float,
 ) -> StagePayload:
-    """Keep opt-in device materialization off the runtime event loop."""
-    if data_ref.get("materialize_cuda_tensors", False):
-        return await asyncio.to_thread(deserialize_direct_cuda_ipc_payload, data_ref)
-    else:
+    """Bound receive latency while retaining in-flight IPC storage until safe."""
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("IPC receive timeout_seconds must be finite and positive")
+    elif not data_ref.get("materialize_cuda_tensors", False):
         return deserialize_direct_cuda_ipc_payload(data_ref)
+    else:
+        pass
+
+    receive_task = asyncio.create_task(
+        asyncio.to_thread(deserialize_direct_cuda_ipc_payload, data_ref)
+    )
+    PENDING_IPC_READS.add(receive_task)
+    is_abandoned = False
+
+    def receive_finished(completed: asyncio.Task[StagePayload]) -> None:
+        PENDING_IPC_READS.discard(completed)
+        if completed.cancelled():
+            return
+        else:
+            failure = completed.exception()
+        if is_abandoned and failure is not None:
+            logger.error(f"Abandoned CUDA IPC receive failed: {failure}")
+        else:
+            pass
+
+    receive_task.add_done_callback(receive_finished)
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(receive_task), timeout=timeout_seconds
+        )
+    except (asyncio.TimeoutError, asyncio.CancelledError) as interruption:
+        is_abandoned = True
+        # note (wusi): A submitted device copy must retain its imports until completion.
+        logger.warning(
+            f"CUDA IPC receive interrupted by {type(interruption).__name__}; "
+            "discarding the result after safe device completion"
+        )
+        if isinstance(interruption, asyncio.TimeoutError):
+            raise TimeoutError(
+                f"CUDA IPC receive exceeded {timeout_seconds} seconds"
+            ) from interruption
+        else:
+            raise
+    finally:
+        # note (wusi): Caller-held exception tracebacks must not retain late GPU results.
+        del receive_task
 
 
 def deserialize_direct_cuda_ipc_payload(

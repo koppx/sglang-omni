@@ -568,7 +568,9 @@ class Stage:
 
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
             try:
-                payload = await stage_io.read_direct_cuda_ipc_payload(msg.data_ref)
+                payload = await stage_io.read_direct_cuda_ipc_payload(
+                    msg.data_ref, timeout_seconds=self.comm.ack_timeout_s
+                )
             except Exception as exc:
                 logger.exception(
                     "Stage %s: direct IPC payload deserialize failed for %s",
@@ -946,7 +948,9 @@ class Stage:
 
     async def discard_data(self, msg: DataReadyMessage) -> None:
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
-            imported = await stage_io.read_direct_cuda_ipc_payload(msg.data_ref)
+            imported = await stage_io.read_direct_cuda_ipc_payload(
+                msg.data_ref, timeout_seconds=self.comm.ack_timeout_s
+            )
             del imported
             return
         else:

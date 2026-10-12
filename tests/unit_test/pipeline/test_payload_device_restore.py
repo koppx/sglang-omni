@@ -13,11 +13,15 @@ from __future__ import annotations
 import asyncio
 import gc
 import multiprocessing
+import threading
+import weakref
 from multiprocessing.connection import Connection
+from typing import Literal
 
 import pytest
 import torch
 
+import sglang_omni.comm.stage_io as stage_io
 from sglang_omni.comm.stage_io import (
     read_direct_cuda_ipc_payload,
     restore_tensor_device,
@@ -192,6 +196,113 @@ def test_metadata_without_events_is_returned_whole() -> None:
     assert strip_process_local_metadata(None) is None
 
 
+@pytest.mark.parametrize("interruption", ["timeout", "cancel"])
+@pytest.mark.parametrize("fail_after_release", [False, True])
+def test_ipc_receive_interrupt_discards_late_result_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    interruption: Literal["timeout", "cancel"],
+    fail_after_release: bool,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    payload_references: list[weakref.ReferenceType[StagePayload]] = []
+
+    def deserialize(data_ref: dict[str, object]) -> StagePayload:
+        assert data_ref["materialize_cuda_tensors"] is True
+        payload = StagePayload(
+            request_id="late", request=OmniRequest(inputs=None), data={}
+        )
+        payload_references.append(weakref.ref(payload))
+        started.set()
+        try:
+            assert release.wait(5)
+            if fail_after_release:
+                raise RuntimeError("late receive failure")
+            else:
+                return payload
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(stage_io, "deserialize_direct_cuda_ipc_payload", deserialize)
+
+    async def run() -> None:
+        receive_task = asyncio.create_task(
+            read_direct_cuda_ipc_payload(
+                {"materialize_cuda_tensors": True},
+                timeout_seconds=0.1 if interruption == "timeout" else 5.0,
+            )
+        )
+        try:
+            assert await asyncio.to_thread(started.wait, 3)
+            if interruption == "cancel":
+                receive_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await receive_task
+                receive_task.cancel()
+            else:
+                with pytest.raises(TimeoutError, match="CUDA IPC receive exceeded"):
+                    await receive_task
+            assert payload_references[0]() is not None
+            assert not finished.is_set()
+        finally:
+            release.set()
+        assert await asyncio.to_thread(finished.wait, 3)
+        deadline = asyncio.get_running_loop().time() + 3
+        while payload_references[0]() is not None:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.01)
+            gc.collect()
+        if fail_after_release:
+            assert "Abandoned CUDA IPC receive failed" in caplog.text
+        else:
+            pass
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("materialize", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_ipc_receive_preserves_success_and_failure(
+    monkeypatch: pytest.MonkeyPatch, materialize: bool, fail: bool
+) -> None:
+    payload = StagePayload(
+        request_id="ready", request=OmniRequest(inputs=None), data={}
+    )
+
+    def deserialize(data_ref: dict[str, object]) -> StagePayload:
+        assert data_ref["materialize_cuda_tensors"] is materialize
+        if fail:
+            raise ValueError("invalid IPC payload")
+        else:
+            return payload
+
+    monkeypatch.setattr(stage_io, "deserialize_direct_cuda_ipc_payload", deserialize)
+    if fail:
+        with pytest.raises(ValueError, match="invalid IPC payload"):
+            asyncio.run(
+                read_direct_cuda_ipc_payload(
+                    {"materialize_cuda_tensors": materialize}, timeout_seconds=1
+                )
+            )
+    else:
+        assert (
+            asyncio.run(
+                read_direct_cuda_ipc_payload(
+                    {"materialize_cuda_tensors": materialize}, timeout_seconds=1
+                )
+            )
+            is payload
+        )
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, -1, float("nan"), float("inf")])
+def test_ipc_receive_rejects_invalid_timeout(timeout_seconds: float) -> None:
+    with pytest.raises(ValueError, match="finite and positive"):
+        asyncio.run(read_direct_cuda_ipc_payload({}, timeout_seconds=timeout_seconds))
+
+
 def receive_delayed_cuda_payloads(connection: Connection) -> None:
     """Import only after the producer has dropped its Python tensor reference."""
     try:
@@ -199,7 +310,9 @@ def receive_delayed_cuda_payloads(connection: Connection) -> None:
             data_ref = connection.recv()
             connection.send("waiting")
             assert connection.recv() == "receive"
-            payload = asyncio.run(read_direct_cuda_ipc_payload(data_ref))
+            payload = asyncio.run(
+                read_direct_cuda_ipc_payload(data_ref, timeout_seconds=30.0)
+            )
             consumer = torch.cuda.Stream()
             with torch.cuda.stream(consumer):
                 hidden_states = payload.data["hidden_states"]

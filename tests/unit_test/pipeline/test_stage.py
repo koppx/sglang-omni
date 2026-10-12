@@ -1380,6 +1380,61 @@ def test_materialized_payload_does_not_block_runtime(
     asyncio.run(run())
 
 
+def test_ipc_receive_timeout_reports_failure_without_late_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+    finished = threading.Event()
+
+    def deserialize(data_ref: dict[str, object]) -> StagePayload:
+        assert data_ref["materialize_cuda_tensors"] is True
+        try:
+            assert release.wait(5)
+            return make_stage_payload(request_id="timeout", data={"answer": 7})
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(stage_io, "deserialize_direct_cuda_ipc_payload", deserialize)
+
+    async def run() -> None:
+        scheduler = FakeScheduler()
+        control_plane = RecordingStageControlPlane()
+        receiver = make_stage(
+            name="talker", scheduler=scheduler, control_plane=control_plane
+        )
+        receiver.comm.ack_timeout_s = 0.1
+        try:
+            await asyncio.wait_for(
+                receiver.on_data_ready(
+                    DataReadyMessage(
+                        request_id="timeout",
+                        from_stage="thinker",
+                        to_stage="talker",
+                        data_ref={
+                            "_type": "TorchCudaIpcPayload",
+                            "version": 1,
+                            "header": b"payload",
+                            "tensors": [],
+                            "materialize_cuda_tensors": True,
+                        },
+                    )
+                ),
+                timeout=2,
+            )
+            assert len(control_plane.completions) == 1
+            assert control_plane.completions[0].success is False
+            assert "exceeded 0.1 seconds" in control_plane.completions[0].error
+            assert scheduler.inbox.empty()
+        finally:
+            release.set()
+        assert await asyncio.to_thread(finished.wait, 3)
+        await asyncio.sleep(0.01)
+        assert scheduler.inbox.empty()
+        assert len(control_plane.completions) == 1
+
+    asyncio.run(run())
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_direct_cuda_ipc_payload_preserves_inline_cpu_tensors() -> None:
