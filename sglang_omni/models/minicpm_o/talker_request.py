@@ -12,6 +12,7 @@ import torch
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import resolve_sampling_seed
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, payload_with_state
+from sglang_omni.profiler.comm_trace import emit as comm_trace
 from sglang_omni.proto.request import StagePayload
 
 if TYPE_CHECKING:
@@ -40,7 +41,21 @@ def build_talker_request(
     thinker_out = state.thinker_out if isinstance(state.thinker_out, dict) else {}
     output_ids = [int(t) for t in (thinker_out.get("output_ids") or [])]
     extra = thinker_out.get("extra_model_outputs") or {}
-    hidden_seq = extra.get("hidden_states_seq") or []
+    hidden_states = extra.get("hidden_states_seq")
+    if hidden_states is None:
+        hidden_states = torch.empty((0, 0))
+    elif isinstance(hidden_states, list):
+        hidden_states = (
+            torch.stack(hidden_states) if hidden_states else torch.empty((0, 0))
+        )
+    elif not isinstance(hidden_states, torch.Tensor):
+        raise TypeError("hidden_states_seq must be a Tensor or a list of tensors")
+    else:
+        pass
+    if hidden_states.ndim != 2:
+        raise ValueError("hidden_states_seq must have shape [tokens, hidden_size]")
+    else:
+        pass
 
     known_tts_output_ids = prompt.get("known_tts_output_ids")
     full_sequence = (
@@ -74,7 +89,7 @@ def build_talker_request(
         )
     else:
         pass
-    end = min(end, hidden_base + len(hidden_seq))
+    end = min(end, hidden_base + hidden_states.shape[0])
     if end <= start:
         empty = torch.empty(0, dtype=torch.long)
         return {"tts_token_ids": empty, "tts_hidden": empty}
@@ -82,7 +97,7 @@ def build_talker_request(
         pass
 
     tokens = torch.tensor(full_sequence[start:end], dtype=torch.long)
-    hidden = torch.stack([hidden_seq[i - hidden_base] for i in range(start, end)])
+    hidden = hidden_states[start - hidden_base : end - hidden_base]
     return {"tts_token_ids": tokens, "tts_hidden": hidden}
 
 
@@ -184,6 +199,7 @@ def make_talker_scheduler_adapters(
     """Build StagePayload <-> scheduler adapters for the sglang talker."""
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
+        payload.wait_for_tensor_ready()
         state = MiniCPMOPipelineState.from_dict(payload.data)
         req_data = build_sglang_talker_request(
             state,
@@ -194,6 +210,18 @@ def make_talker_scheduler_adapters(
             tts_eos_token_id=tts_eos_token_id,
             params=payload.request.params or {},
             request_id=payload.request_id,
+        )
+        condition = req_data.prefill_input_embeds
+        if condition is not None and condition.is_cuda:
+            ready_event = torch.cuda.Event()
+            ready_event.record(torch.cuda.current_stream(condition.device))
+            payload.tensor_ready_events = [ready_event]
+        else:
+            pass
+        comm_trace(
+            "minicpm_condition_enqueued",
+            request_id=payload.request_id,
+            device=str(condition.device) if condition is not None else None,
         )
         req_data.stage_payload = payload
         return req_data
@@ -209,6 +237,8 @@ def make_talker_scheduler_adapters(
                 output_ids.pop()
             codec = torch.tensor(output_ids, dtype=torch.long)
         state.engine_outputs[TALKER_STAGE] = {"codec_tokens": codec}
-        return payload_with_state(payload, state)
+        result = payload_with_state(payload, state)
+        result.tensor_ready_events = []
+        return result
 
     return request_builder, result_adapter

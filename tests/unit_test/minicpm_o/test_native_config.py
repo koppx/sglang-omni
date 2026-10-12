@@ -45,6 +45,20 @@ class ConfigLoaded(Exception):
     """Stop at the configuration boundary before allocating any model or GPU."""
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_gpu_handoff_configuration_reaches_only_the_thinker(enabled: bool) -> None:
+    config = MiniCPMOSpeechPipelineConfig(
+        model_path="model", enable_gpu_handoff=enabled
+    )
+    assert config.stage_factory_kwargs("thinker") == {
+        "speech_enabled": True,
+        "enable_gpu_handoff": enabled,
+    }
+    assert config.stage_factory_kwargs("preprocessing") == {"speech_enabled": True}
+    assert config.stage_factory_kwargs("talker") == {}
+    assert not MiniCPMOSpeechPipelineConfig(model_path="model").enable_gpu_handoff
+
+
 @pytest.fixture
 def snapshot(tmp_path: Path) -> Path:
     config = {
@@ -139,8 +153,11 @@ def test_engine_factory_resolves_native_config_before_server_args(
     monkeypatch.setattr(stages, "build_sglang_server_args", build_server_args)
     factory = getattr(stages, f"create_sglang_{stage}_executor_from_config")
     overrides = {} if trust_override is None else {"trust_remote_code": trust_override}
+    factory_kwargs = MiniCPMOSpeechPipelineConfig(
+        model_path=str(snapshot)
+    ).stage_factory_kwargs(stage)
     with pytest.raises(ConfigLoaded):
-        factory(str(snapshot), server_args_overrides=overrides)
+        factory(str(snapshot), server_args_overrides=overrides, **factory_kwargs)
 
 
 @pytest.fixture

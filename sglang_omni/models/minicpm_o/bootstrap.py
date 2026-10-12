@@ -112,6 +112,7 @@ def create_thinker_scheduler(
     server_args: ServerArgs,
     gpu_id: int = 0,
     *,
+    enable_gpu_handoff: bool,
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
@@ -202,7 +203,12 @@ def create_thinker_scheduler(
         int(tokenizer.convert_tokens_to_ids(token))
         for token in ("<|tts_eos|>", "<|im_end|>", "</s>")
     ]
-    model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc, eos_token_ids)
+    model_runner = MiniCPMOThinkerModelRunner(
+        model_worker,
+        output_proc,
+        eos_token_ids,
+        enable_gpu_handoff=enable_gpu_handoff,
+    )
 
     request_builder, result_adapter = make_thinker_scheduler_adapters(
         tokenizer=tokenizer,

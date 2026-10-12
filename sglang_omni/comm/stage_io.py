@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import pickle
@@ -21,6 +22,8 @@ from sglang_omni.comm.data_ref import (
     TensorMeta,
     TransportKind,
 )
+from sglang_omni.profiler.comm_trace import emit as comm_trace
+from sglang_omni.profiler.comm_trace import enabled as comm_trace_enabled
 from sglang_omni.proto import DataReadyMessage, StagePayload
 from sglang_omni.proto.messages import (
     DirectCudaIpcPayloadRef,
@@ -234,13 +237,14 @@ def serialize_direct_cuda_ipc_payload(
         raise ValueError("direct CUDA IPC payload requires at least one CUDA tensor")
     else:
         pass
+    payload.wait_for_tensor_ready()
     header = StagePayload(
         request_id=payload.request_id,
         request=payload.request,
         data=data_without_tensors,
     )
     header_bytes = pickle.dumps(header)
-    return {
+    data_ref: DirectCudaIpcPayloadRef = {
         "_type": _DIRECT_CUDA_IPC_PAYLOAD_TYPE,
         "version": 1,
         "header": header_bytes,
@@ -249,12 +253,39 @@ def serialize_direct_cuda_ipc_payload(
             for path, tensor in tensors.items()
         ],
     }
+    if payload.tensor_ready_events:
+        data_ref["materialize_cuda_tensors"] = True
+    else:
+        pass
+    if comm_trace_enabled():
+        comm_trace(
+            "comm_payload_export",
+            request_id=payload.request_id,
+            transport="torch_cuda_ipc",
+            tensor_bytes=sum(
+                tensor.numel() * tensor.element_size() for tensor in tensors.values()
+            ),
+            materialize_cuda_tensors=bool(payload.tensor_ready_events),
+        )
+    else:
+        pass
+    return data_ref
 
 
 def is_direct_cuda_ipc_payload_ref(value: object) -> bool:
     return (
         isinstance(value, dict) and value.get("_type") == _DIRECT_CUDA_IPC_PAYLOAD_TYPE
     )
+
+
+async def read_direct_cuda_ipc_payload(
+    data_ref: dict[str, object] | StageDataRef,
+) -> StagePayload:
+    """Keep opt-in device materialization off the runtime event loop."""
+    if data_ref.get("materialize_cuda_tensors", False):
+        return await asyncio.to_thread(deserialize_direct_cuda_ipc_payload, data_ref)
+    else:
+        return deserialize_direct_cuda_ipc_payload(data_ref)
 
 
 def deserialize_direct_cuda_ipc_payload(
@@ -336,6 +367,27 @@ def deserialize_direct_cuda_ipc_payload(
         else:
             pass
         tensors[path] = tensor
+    if data_ref.get("materialize_cuda_tensors", False):
+        # note (OpenAI): IPC deletion only fences its current stream, so publish owned storage.
+        owned_tensors = {
+            path: tensor.clone(memory_format=torch.contiguous_format)
+            for path, tensor in tensors.items()
+        }
+        for device in {tensor.device for tensor in owned_tensors.values()}:
+            ready_event = torch.cuda.Event()
+            ready_event.record(torch.cuda.current_stream(device))
+            ready_event.synchronize()
+        tensors = owned_tensors
+        comm_trace(
+            "comm_payload_device_ready",
+            request_id=header.request_id,
+            transport="torch_cuda_ipc",
+            tensor_bytes=sum(
+                tensor.numel() * tensor.element_size() for tensor in tensors.values()
+            ),
+        )
+    else:
+        pass
     return StagePayload(
         request_id=header.request_id,
         request=header.request,
@@ -514,7 +566,13 @@ async def write_payload(
     from_stage: str | None = None,
     to_stage: str | None = None,
 ) -> tuple[DataRef, RelayOperation]:
+    payload.wait_for_tensor_ready()
     data_without_tensors, tensors = extract_tensors(payload.data)
+    for tensor in tensors.values():
+        if tensor.is_cuda:
+            tensor.record_stream(torch.cuda.current_stream(tensor.device))
+        else:
+            pass
     packed, entries = pack_tensors(tensors, device=relay_device(relay))
     header = StagePayload(
         request_id=payload.request_id,

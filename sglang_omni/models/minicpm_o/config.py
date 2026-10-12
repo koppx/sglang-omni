@@ -205,7 +205,14 @@ class MiniCPMOPipelineConfig(PipelineConfig):
     }
 
     model_path: str
+    enable_gpu_handoff: bool = False
     stages: list[StageConfig] = Field(default_factory=text_stages)
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
+        if stage_name == THINKER_STAGE:
+            return {"enable_gpu_handoff": self.enable_gpu_handoff}
+        else:
+            return {}
 
 
 class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
@@ -228,11 +235,12 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
     stages: list[StageConfig] = Field(default_factory=speech_stages)
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
+        factory_kwargs = super().stage_factory_kwargs(stage_name)
         if stage_name in (THINKER_STAGE, "preprocessing"):
-            return {"speech_enabled": True}
+            factory_kwargs["speech_enabled"] = True
         else:
             pass
-        return {}
+        return factory_kwargs
 
 
 EntryClass = MiniCPMOSpeechPipelineConfig

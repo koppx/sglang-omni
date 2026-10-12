@@ -32,6 +32,10 @@ def build_tts_condition(
 ) -> torch.Tensor:
     """Compose token-aligned speech conditions with explicit turn/unit boundaries."""
     device, dtype = text_embedding.weight.device, text_embedding.weight.dtype
+    if hidden_states.is_cuda:
+        hidden_states.record_stream(torch.cuda.current_stream(hidden_states.device))
+    else:
+        pass
     tokens = token_ids.to(device=device, dtype=torch.long).reshape(-1)
     hidden = hidden_states.to(device=device, dtype=dtype)
     boundary = text_embedding(torch.tensor(boundary_tokens, device=device))

@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
+import torch
+
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 
 
@@ -66,6 +68,9 @@ class StagePayload:
     request_id: str
     request: OmniRequest
     data: object
+    tensor_ready_events: list[torch.cuda.Event] = field(
+        default_factory=list, init=False, repr=False, compare=False
+    )
     # Scheduler-local stream ingress state. These fields intentionally stay
     # out of to_dict(); they are rebuilt by the receiving scheduler and never
     # form part of the inter-stage wire contract.
@@ -75,6 +80,11 @@ class StagePayload:
     prefetched_stream_done: bool = field(
         default=False, init=False, repr=False, compare=False
     )
+
+    def wait_for_tensor_ready(self) -> None:
+        """Order this thread's CUDA streams after process-local payload work."""
+        for ready_event in self.tensor_ready_events:
+            torch.cuda.current_stream(ready_event.device).wait_event(ready_event)
 
     def to_dict(self) -> dict[str, object]:
         return {

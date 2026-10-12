@@ -341,6 +341,7 @@ def create_decode_executor(model_path: str) -> StreamingDetokenizeScheduler:
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
+    enable_gpu_handoff: bool,
     device: str | None = None,
     gpu_id: int | None = None,
     tp_rank: int = 0,
@@ -389,6 +390,7 @@ def create_sglang_thinker_executor_from_config(
     scheduler = create_thinker_scheduler(
         server_args,
         gpu_id,
+        enable_gpu_handoff=enable_gpu_handoff,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,

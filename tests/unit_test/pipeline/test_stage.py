@@ -20,6 +20,7 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
 from sglang_omni.proto import DataReadyMessage, SubmitMessage
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
@@ -596,6 +597,50 @@ def test_stage_sends_same_process_payload_as_local_object(monkeypatch) -> None:
             "metadata": {"to_stage": "decode", "transport": "local_object"},
         }
     ]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_stage_materializes_fenced_same_process_payload() -> None:
+    async def run() -> None:
+        dispatcher = LocalStageDispatcher()
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        receiver_scheduler = FakeScheduler()
+        receiver = make_stage(name="talker", scheduler=receiver_scheduler, relay=relay)
+        sender = make_stage(
+            name="thinker",
+            endpoints={"talker": "inproc://talker"},
+            relay=relay,
+            control_plane=control_plane,
+            same_process_targets={"talker"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, receiver])
+        producer = torch.cuda.Stream()
+        with torch.cuda.stream(producer):
+            payload = make_stage_payload(
+                request_id="req-fenced",
+                data={"hidden_states": torch.arange(1024, device="cuda") * 3},
+            )
+            ready_event = torch.cuda.Event()
+            ready_event.record(producer)
+            payload.tensor_ready_events = [ready_event]
+
+        await sender.send_to_stage(
+            "req-fenced", "talker", payload, allow_local_object=True
+        )
+
+        assert receiver_scheduler.inbox.empty()
+        assert len(control_plane.sent_to_stage) == 1
+        _, _, message = control_plane.sent_to_stage[0]
+        await receiver.on_data_ready(message)
+        received = receiver_scheduler.inbox.get_nowait().data
+        assert received.tensor_ready_events == []
+        assert torch.equal(received.data["hidden_states"].cpu(), torch.arange(1024) * 3)
+        assert pickle.loads(pickle.dumps(received)).tensor_ready_events == []
+
+    asyncio.run(run())
 
 
 def test_stage_applies_projector_before_local_object_send() -> None:
@@ -1258,6 +1303,79 @@ def test_stage_receives_same_gpu_direct_cuda_ipc_payload(monkeypatch) -> None:
         assert queued.type == "new_request"
         assert queued.data is payload
         assert control_plane.sent_to_stage == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancel_receive", [False, True])
+@pytest.mark.parametrize("aborted_before_receive", [False, True])
+def test_materialized_payload_does_not_block_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_receive: bool,
+    aborted_before_receive: bool,
+) -> None:
+    payload = make_stage_payload(request_id="owned", data={"answer": 7})
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    runtime_thread = threading.get_ident()
+
+    def deserialize(data_ref: dict[str, object]) -> StagePayload:
+        assert threading.get_ident() != runtime_thread
+        assert data_ref["materialize_cuda_tensors"] is True
+        started.set()
+        try:
+            assert release.wait(5)
+            return payload
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(stage_io, "deserialize_direct_cuda_ipc_payload", deserialize)
+
+    async def run() -> None:
+        scheduler = FakeScheduler()
+        receiver = make_stage(name="talker", scheduler=scheduler)
+        if aborted_before_receive:
+            receiver.aborted.add("owned")
+        else:
+            pass
+        task = asyncio.create_task(
+            receiver.on_data_ready(
+                DataReadyMessage(
+                    request_id="owned",
+                    from_stage="thinker",
+                    to_stage="talker",
+                    data_ref={
+                        "_type": "TorchCudaIpcPayload",
+                        "version": 1,
+                        "header": b"payload",
+                        "tensors": [],
+                        "materialize_cuda_tensors": True,
+                    },
+                )
+            )
+        )
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            assert scheduler.inbox.empty()
+            if cancel_receive:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                pass
+            release.set()
+            if cancel_receive:
+                assert await asyncio.to_thread(finished.wait, 5)
+                assert scheduler.inbox.empty()
+            else:
+                await asyncio.wait_for(task, 5)
+                if aborted_before_receive:
+                    assert scheduler.inbox.empty()
+                else:
+                    assert scheduler.inbox.get_nowait().data is payload
+        finally:
+            release.set()
 
     asyncio.run(run())
 

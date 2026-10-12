@@ -3,7 +3,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, TypeAlias, TypedDict
+from typing import Literal, NotRequired, TypeAlias, TypedDict
 
 import msgspec
 
@@ -25,6 +25,7 @@ class DirectCudaIpcPayloadRef(TypedDict):
     version: Literal[1]
     header: bytes
     tensors: list[DirectCudaIpcTensor]
+    materialize_cuda_tensors: NotRequired[bool]
 
 
 class DirectCudaIpcStreamChunkOptionalFields(TypedDict, total=False):

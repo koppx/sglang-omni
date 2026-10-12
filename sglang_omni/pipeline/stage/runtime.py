@@ -568,7 +568,7 @@ class Stage:
 
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
             try:
-                payload = stage_io.deserialize_direct_cuda_ipc_payload(msg.data_ref)
+                payload = await stage_io.read_direct_cuda_ipc_payload(msg.data_ref)
             except Exception as exc:
                 logger.exception(
                     "Stage %s: direct IPC payload deserialize failed for %s",
@@ -946,7 +946,7 @@ class Stage:
 
     async def discard_data(self, msg: DataReadyMessage) -> None:
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
-            imported = stage_io.deserialize_direct_cuda_ipc_payload(msg.data_ref)
+            imported = await stage_io.read_direct_cuda_ipc_payload(msg.data_ref)
             del imported
             return
         else:
@@ -1613,6 +1613,7 @@ class Stage:
         if (
             use_local_object
             and target in self.same_process_targets
+            and not projected_payload.tensor_ready_events
             and self.can_send_full_payload_locally(
                 request_id,
                 target,
@@ -1649,6 +1650,17 @@ class Stage:
             pass
 
         can_use_direct_cuda_ipc = self.comm.router.can_use_direct_cuda_ipc(target)
+        if self.disable_direct_cuda_ipc_payload:
+            fallback_reason = "disabled"
+        elif (
+            projected_payload.tensor_ready_events
+            and target in self.same_process_targets
+        ):
+            fallback_reason = "local_tensor_fence"
+        elif not can_use_direct_cuda_ipc:
+            fallback_reason = "topology_or_backend"
+        else:
+            fallback_reason = "no_cuda_tensor"
         if (
             not self.disable_direct_cuda_ipc_payload
             and can_use_direct_cuda_ipc
@@ -1663,7 +1675,11 @@ class Stage:
                     raise
                 else:
                     pass
+                fallback_reason = "received_cuda_storage"
             else:
+                self.comm.router.note_transport_choice(
+                    "payload", target, "torch_cuda_ipc"
+                )
                 await self.control_plane.send_to_stage(
                     target,
                     endpoint,
@@ -1687,6 +1703,16 @@ class Stage:
 
         transport_kind, relay = self.comm.router.relay_for_payload(
             target, projected_payload
+        )
+        _comm_trace(
+            "comm_payload_fallback",
+            request_id=request_id,
+            stage=self.name,
+            peer_stage=target,
+            transport=transport_kind.value,
+            reason=fallback_reason,
+            source_gpu=self.comm.router.placement_gpu_id,
+            target_gpus=self.comm.router.stage_gpu_ids.get(target),
         )
         await self.comm.send_payload(
             relay=relay,

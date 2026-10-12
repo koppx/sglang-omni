@@ -12,6 +12,7 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
+from sglang_omni.profiler.comm_trace import emit as comm_trace
 from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
@@ -43,6 +44,8 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         tp_worker: ModelWorker,
         output_processor: SGLangOutputProcessor,
         eos_token_ids: list[int],
+        *,
+        enable_gpu_handoff: bool,
     ) -> None:
         from sglang.srt.model_executor.forward_batch_info import (
             CaptureHiddenMode,
@@ -72,6 +75,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             else get_server_return_hidden_states_mode()
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
+        self.enable_gpu_handoff: bool = enable_gpu_handoff
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
@@ -172,13 +176,14 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     def on_request_finished(
         self, request_id: str, req_data: SGLangARRequestData
     ) -> None:
-        """Flush the request's hidden accumulator with a single D2H copy."""
+        """Publish contiguous speech hidden states and their device dependency."""
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
             return
         else:
             pass
         payload = req_data.stage_payload
+        hidden_template = seq[0]
         prompt = MiniCPMOPipelineState.from_dict(payload.data).prompt or {}
         known_tts_output_ids = prompt.get("known_tts_output_ids")
         if known_tts_output_ids is not None:
@@ -186,8 +191,24 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             seq = seq[-len(known_tts_output_ids) - 1 : -1]
         else:
             pass
-        stacked = torch.stack(seq).to("cpu")
-        req_data.extra_model_outputs["hidden_states_seq"] = list(stacked.unbind(0))
+        if seq:
+            hidden_states = torch.stack(seq)
+        else:
+            hidden_states = hidden_template.new_empty((0, hidden_template.shape[-1]))
+        if self.enable_gpu_handoff and hidden_states.is_cuda:
+            ready_event = torch.cuda.Event()
+            ready_event.record(torch.cuda.current_stream(hidden_states.device))
+            payload.tensor_ready_events = [ready_event]
+        else:
+            hidden_states = hidden_states.to("cpu")
+        req_data.extra_model_outputs["hidden_states_seq"] = hidden_states
+        comm_trace(
+            "minicpm_hidden_enqueued",
+            request_id=request_id,
+            device=str(hidden_states.device),
+            rows=hidden_states.shape[0],
+            tensor_bytes=hidden_states.numel() * hidden_states.element_size(),
+        )
 
     def reset_request(self, request_id: str) -> None:
         """Drop accumulated hidden states on abort (no terminal flush runs)."""

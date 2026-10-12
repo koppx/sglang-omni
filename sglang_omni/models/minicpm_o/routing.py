@@ -175,11 +175,19 @@ def project_thinker_to_talker(payload: StagePayload) -> StagePayload:
     thinker_out = state.thinker_out if isinstance(state.thinker_out, dict) else {}
     extra = thinker_out.get("extra_model_outputs") or {}
     projected = MiniCPMOPipelineState(
-        prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
+        prompt=(
+            {
+                name: value
+                for name, value in state.prompt.items()
+                if name in ("input_ids", "known_tts_output_ids")
+            }
+            if state.prompt is not None
+            else None
+        ),
         thinker_out={
             "output_ids": list(thinker_out.get("output_ids") or []),
             "extra_model_outputs": {
-                "hidden_states_seq": extra.get("hidden_states_seq") or [],
+                "hidden_states_seq": extra.get("hidden_states_seq", []),
             },
         },
     )
@@ -219,7 +227,9 @@ def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
     else:
         pass
 
-    return payload_with_state(payload, state)
+    projected = payload_with_state(payload, state)
+    projected.tensor_ready_events = []
+    return projected
 
 
 def project_preprocessing_to_encoder(
@@ -243,11 +253,13 @@ def project_preprocessing_to_encoder(
 def payload_with_state(
     payload: StagePayload, state: MiniCPMOPipelineState
 ) -> StagePayload:
-    return StagePayload(
+    projected = StagePayload(
         request_id=payload.request_id,
         request=payload.request,
         data=state.to_dict(),
     )
+    projected.tensor_ready_events = list(payload.tensor_ready_events)
+    return projected
 
 
 def project_encoder_input_metadata(

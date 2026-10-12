@@ -52,11 +52,19 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
                 continue
             else:
                 pass
+            if data.stage_payload is not None:
+                data.stage_payload.wait_for_tensor_ready()
+            else:
+                pass
             tensor = data.prefill_input_embeds
             if tensor is None:
                 raise RuntimeError(
                     "MiniCPM-o talker prefill requires condition embeddings"
                 )
+            else:
+                pass
+            if tensor.is_cuda:
+                tensor.record_stream(torch.cuda.current_stream(tensor.device))
             else:
                 pass
             req = data.req

@@ -5,21 +5,24 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 
-if TYPE_CHECKING:
-    import torch
-else:
-    pass
+import torch
 
 
 class PromptInputs(TypedDict):
     """Tokenized prompt inputs for the thinker."""
 
     input_ids: torch.Tensor
-    attention_mask: torch.Tensor
-    prompt_text: str
+    attention_mask: NotRequired[torch.Tensor]
+    prompt_text: NotRequired[str]
     known_tts_output_ids: NotRequired[list[int] | None]
+
+
+class ThinkerExtraOutputs(TypedDict, total=False):
+    """Captured Tensor[N,H]; row lists are accepted during migration."""
+
+    hidden_states_seq: torch.Tensor | list[torch.Tensor]
 
 
 class ThinkerOutput(TypedDict, total=False):
@@ -28,7 +31,7 @@ class ThinkerOutput(TypedDict, total=False):
     output_ids: list[int]
     step: int
     is_final: bool
-    extra_model_outputs: dict[str, torch.Tensor | list[torch.Tensor] | list[int]]
+    extra_model_outputs: ThinkerExtraOutputs
     finish_reason: str
     weight_version: str
     output_token_logprobs: list[list[float | int]]

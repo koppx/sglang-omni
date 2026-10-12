@@ -10,12 +10,21 @@ process that recorded them.
 
 from __future__ import annotations
 
+import asyncio
+import gc
+import multiprocessing
+from multiprocessing.connection import Connection
+
+import pytest
 import torch
 
 from sglang_omni.comm.stage_io import (
+    read_direct_cuda_ipc_payload,
     restore_tensor_device,
+    serialize_direct_cuda_ipc_payload,
     strip_process_local_metadata,
 )
+from sglang_omni.proto.request import OmniRequest, StagePayload
 
 
 class BackendEvent(torch.Event):
@@ -181,3 +190,77 @@ def test_a_backend_event_is_stripped_and_the_rest_survives() -> None:
 def test_metadata_without_events_is_returned_whole() -> None:
     assert strip_process_local_metadata({"ref_code_len": 0}) == {"ref_code_len": 0}
     assert strip_process_local_metadata(None) is None
+
+
+def receive_delayed_cuda_payloads(connection: Connection) -> None:
+    """Import only after the producer has dropped its Python tensor reference."""
+    try:
+        for _ in range(8):
+            data_ref = connection.recv()
+            connection.send("waiting")
+            assert connection.recv() == "receive"
+            payload = asyncio.run(read_direct_cuda_ipc_payload(data_ref))
+            consumer = torch.cuda.Stream()
+            with torch.cuda.stream(consumer):
+                hidden_states = payload.data["hidden_states"]
+                hidden_states.record_stream(consumer)
+                result = hidden_states.sum()
+            del payload, hidden_states
+            with torch.cuda.stream(consumer):
+                connection.send(result.item())
+        connection.send("done")
+    finally:
+        connection.close()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA IPC")
+def test_cuda_payload_survives_delayed_cross_process_consumption() -> None:
+    context = multiprocessing.get_context("spawn")
+    sender, receiver = context.Pipe()
+    process = context.Process(target=receive_delayed_cuda_payloads, args=(receiver,))
+    process.start()
+    receiver.close()
+    producer = torch.cuda.Stream()
+    export = torch.cuda.Stream()
+    baseline_bytes = torch.cuda.memory_allocated()
+    try:
+        for value in range(8):
+            with torch.cuda.stream(producer):
+                payload = StagePayload(
+                    request_id=f"ipc-{value}",
+                    request=OmniRequest(inputs=None),
+                    data={
+                        "hidden_states": torch.full(
+                            (64, 1024), float(value), device="cuda"
+                        )
+                    },
+                )
+                ready_event = torch.cuda.Event()
+                ready_event.record(producer)
+                payload.tensor_ready_events = [ready_event]
+            with torch.cuda.stream(export):
+                data_ref = serialize_direct_cuda_ipc_payload(payload)
+            assert data_ref["materialize_cuda_tensors"]
+            sender.send(data_ref)
+            assert sender.poll(30)
+            assert sender.recv() == "waiting"
+            del payload
+            gc.collect()
+            sender.send("receive")
+            assert sender.poll(30)
+            assert sender.recv() == float(value * 64 * 1024)
+        assert sender.poll(30)
+        assert sender.recv() == "done"
+        process.join(30)
+        assert process.exitcode == 0
+        gc.collect()
+        torch.cuda.ipc_collect()
+        assert torch.cuda.memory_allocated() <= baseline_bytes
+    finally:
+        sender.close()
+        if process.is_alive():
+            process.terminate()
+            process.join(10)
+        else:
+            pass
