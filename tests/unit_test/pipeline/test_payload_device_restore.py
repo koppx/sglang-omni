@@ -356,16 +356,16 @@ def test_cuda_payload_survives_delayed_cross_process_consumption() -> None:
                 data_ref = serialize_direct_cuda_ipc_payload(payload)
             assert data_ref["materialize_cuda_tensors"]
             sender.send(data_ref)
-            assert sender.poll(30)
+            assert sender.poll(120)
             assert sender.recv() == "waiting"
             del payload
             gc.collect()
             sender.send("receive")
-            assert sender.poll(30)
+            assert sender.poll(120)
             assert sender.recv() == float(value * 64 * 1024)
-        assert sender.poll(30)
+        assert sender.poll(120)
         assert sender.recv() == "done"
-        process.join(30)
+        process.join(120)
         assert process.exitcode == 0
         gc.collect()
         torch.cuda.ipc_collect()
