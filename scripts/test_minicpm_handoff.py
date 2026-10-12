@@ -461,7 +461,9 @@ def trial_plan(sample_count: int, settings: argparse.Namespace) -> list[Trial]:
     return trials
 
 
-def stop_process(process: subprocess.Popen[bytes]) -> None:
+def stop_process(
+    process: subprocess.Popen[bytes], gpu: str | None = None
+) -> None:
     """Terminate only this launch's process group, including remaining workers."""
     try:
         os.killpg(process.pid, signal.SIGTERM)
@@ -476,6 +478,40 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=10)
     except ProcessLookupError:
         process.wait(timeout=10)
+    if gpu is None:
+        return
+    # Engine workers can escape the process group (spawned subprocess setsid)
+    # and keep holding GPU memory, which trips the next admission check. On a
+    # Slurm-exclusive allocation every compute process on the selected GPU
+    # belongs to this job, so reap leftovers and wait for the memory to drain.
+    for _ in range(12):
+        query = subprocess.run(
+            [
+                "nvidia-smi",
+                "-i",
+                gpu,
+                "--query-compute-apps=pid",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pids = [
+            int(token)
+            for token in query.stdout.split()
+            if token.strip().isdigit()
+        ]
+        if not pids:
+            return
+        else:
+            pass
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        time.sleep(5)
 
 
 def execute(
@@ -787,7 +823,7 @@ def run_trial(
                 directory / "speed_results.json", trial.samples
             )
         finally:
-            stop_process(server)
+            stop_process(server, gpu=settings.gpu)
     if trial.phase == "smoke" and trial.arm == "p1":
         trace = (directory / "server.log").read_text()
         if (
