@@ -18,18 +18,32 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # Dependency Check
 # ==========================================
+NIXL_IMPORT_ERROR: ImportError | None = None
 try:
-    from nixl._api import nixl_agent as NixlAgent
-    from nixl._api import nixl_agent_config
+    try:
+        from nixl_cu13._api import nixl_agent as NixlAgent
+        from nixl_cu13._api import nixl_agent_config
+    except ModuleNotFoundError as error:
+        if error.name not in {"nixl_cu13", "nixl_cu13._api"}:
+            raise
+        else:
+            pass
+        from nixl._api import nixl_agent as NixlAgent
+        from nixl._api import nixl_agent_config
 
     NIXL_AVAILABLE = True
-except ImportError as e:
-    logger.error(f"Failed to import nixl: {e}. NixlRelay will not work.")
+except ImportError as error:
+    logger.error(f"Failed to import NIXL: {error}. NixlRelay will not work.")
     NIXL_AVAILABLE = False
+    NIXL_IMPORT_ERROR = error
 
 
 class Connection:
     def __init__(self, engine_id: str, num_threads: int = 2):
+        if not NIXL_AVAILABLE:
+            raise RuntimeError(f"NIXL is unavailable: {NIXL_IMPORT_ERROR}")
+        else:
+            pass
         self.name = engine_id
         config = nixl_agent_config(num_threads=num_threads)
         self.nixl = NixlAgent(str(uuid.uuid4()), config)
