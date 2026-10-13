@@ -68,6 +68,13 @@ logger = logging.getLogger(__name__)
 
 _SCHEDULER_THREAD_JOIN_TIMEOUT_S = 5.0
 _OUTBOX_DRAIN_BATCH_SIZE = 64
+# Direct CUDA IPC payloads pay one synchronous cudaIpcOpenMemHandle per
+# transfer; below this size a pooled-relay device copy is cheaper than that
+# fixed cost. Observed on H100: ~5 ms open vs ~0.2 ms host round trip for
+# 128 KiB hidden states at c32.
+DIRECT_CUDA_IPC_MIN_PAYLOAD_BYTES = int(
+    os.environ.get("SGLANG_OMNI_DIRECT_IPC_MIN_BYTES", 8 * 1024 * 1024)
+)
 
 
 GetNextFn = Callable[[str, object], str | list[str] | None]
@@ -1654,6 +1661,12 @@ class Stage:
             pass
 
         can_use_direct_cuda_ipc = self.comm.router.can_use_direct_cuda_ipc(target)
+        cuda_payload_bytes = (
+            stage_io.payload_cuda_tensor_bytes(projected_payload)
+            if can_use_direct_cuda_ipc
+            and stage_io.payload_has_cuda_tensor(projected_payload)
+            else 0
+        )
         if self.disable_direct_cuda_ipc_payload:
             fallback_reason = "disabled"
         elif (
@@ -1663,12 +1676,16 @@ class Stage:
             fallback_reason = "local_tensor_fence"
         elif not can_use_direct_cuda_ipc:
             fallback_reason = "topology_or_backend"
+        elif not cuda_payload_bytes:
+            fallback_reason = "no_cuda_tensor"
+        elif cuda_payload_bytes < DIRECT_CUDA_IPC_MIN_PAYLOAD_BYTES:
+            fallback_reason = "payload_below_ipc_min_bytes"
         else:
             fallback_reason = "no_cuda_tensor"
         if (
             not self.disable_direct_cuda_ipc_payload
             and can_use_direct_cuda_ipc
-            and stage_io.payload_has_cuda_tensor(projected_payload)
+            and cuda_payload_bytes >= DIRECT_CUDA_IPC_MIN_PAYLOAD_BYTES
         ):
             try:
                 direct_ref = stage_io.serialize_direct_cuda_ipc_payload(

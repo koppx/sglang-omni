@@ -223,6 +223,16 @@ def payload_has_cuda_tensor(payload: StagePayload) -> bool:
     return contains_cuda_tensor(payload)
 
 
+def payload_cuda_tensor_bytes(payload: StagePayload) -> int:
+    """Total bytes of CUDA tensors in payload.data, for transport sizing."""
+    _, tensors = extract_tensors(payload.data)
+    return sum(
+        tensor.numel() * tensor.element_size()
+        for tensor in tensors.values()
+        if tensor.is_cuda
+    )
+
+
 def serialize_direct_cuda_ipc_payload(
     payload: StagePayload,
 ) -> DirectCudaIpcPayloadRef:
