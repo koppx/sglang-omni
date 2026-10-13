@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.profiler.comm_trace import elapsed_ms as comm_trace_elapsed_ms
+from sglang_omni.profiler.comm_trace import emit as comm_trace
+from sglang_omni.profiler.comm_trace import now_ns as comm_trace_now_ns
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
@@ -40,6 +43,11 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> None:
         """Prepare request embeddings; schedule_batch follows the runner interface."""
+        # diagnosis (p1-diag): fence waits block the talker prefill loop, so
+        # measure them per batch alongside batch shape and duration.
+        batch_started_ns = comm_trace_now_ns()
+        fence_waited_ns = 0
+        fenced_payloads = 0
         parts: list[torch.Tensor] = []
         for sched_req in requests:
             data = sched_req.data
@@ -53,7 +61,10 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             else:
                 pass
             if data.stage_payload is not None:
+                fence_started_ns = comm_trace_now_ns()
                 data.stage_payload.wait_for_tensor_ready()
+                fence_waited_ns += comm_trace_now_ns() - fence_started_ns
+                fenced_payloads += 1
             else:
                 pass
             tensor = data.prefill_input_embeds
@@ -104,6 +115,14 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
                 input_embeds=input_embeds,
                 input_embeds_are_projected=True,
             ),
+        )
+        comm_trace(
+            "minicpm_talker_prefill",
+            batch_requests=len(requests),
+            prefill_rows=int(input_embeds.shape[0]),
+            fenced_payloads=fenced_payloads,
+            fence_wait_ms=round(fence_waited_ns / 1_000_000.0, 3),
+            prefill_ms=round(comm_trace_elapsed_ms(batch_started_ns), 3),
         )
 
     def process_sampling_logits(
@@ -169,6 +188,11 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             # note (Junnan Li): The last sample has no KV and is not committed by chunk TTS.
             data.req.output_ids = data.req.output_ids[:-1]
             data.req.finished_len = len(data.req.output_ids)
+            comm_trace(
+                "minicpm_talker_request_done",
+                request_id=request_id,
+                codec_ids=len(data.req.output_ids),
+            )
         else:
             pass
         super().on_request_finished(request_id, data)

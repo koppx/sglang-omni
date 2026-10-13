@@ -38,7 +38,9 @@ from sglang_omni.pipeline.tp_control import (
     TPWorkMessage,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.profiler.comm_trace import elapsed_ms as _comm_trace_elapsed_ms
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
+from sglang_omni.profiler.comm_trace import now_ns as _comm_trace_now_ns
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
@@ -567,6 +569,7 @@ class Stage:
             pass
 
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
+            receive_started_ns = _comm_trace_now_ns()
             try:
                 payload = await stage_io.read_direct_cuda_ipc_payload(
                     msg.data_ref, timeout_seconds=self.comm.ack_timeout_s
@@ -584,6 +587,13 @@ class Stage:
                 return
             await self.wait_for_receive_predecessor(predecessor)
             await self.receive_payload_from_stage(request_id, msg.from_stage, payload)
+            _comm_trace(
+                "stage_ipc_receive",
+                stage=self.name,
+                from_stage=msg.from_stage,
+                request_id=request_id,
+                receive_ms=round(_comm_trace_elapsed_ms(receive_started_ns), 3),
+            )
             return
         else:
             pass

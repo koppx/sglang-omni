@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 
 logger = logging.getLogger("sglang_omni.comm_trace")
@@ -29,6 +30,11 @@ def emit(event: str, **fields: object) -> None:
         return
     else:
         pass
-    record: dict[str, object] = {"event": event, "ts_ns": time.time_ns()}
+    record: dict[str, object] = {
+        "event": event,
+        "ts_ns": time.time_ns(),
+        "pid": os.getpid(),
+        "tid": threading.get_ident(),
+    }
     record.update(fields)
     logger.info("COMM_TRACE %s", json.dumps(record, sort_keys=True, default=str))

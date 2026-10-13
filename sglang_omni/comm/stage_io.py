@@ -26,6 +26,8 @@ from sglang_omni.comm.data_ref import (
 )
 from sglang_omni.profiler.comm_trace import emit as comm_trace
 from sglang_omni.profiler.comm_trace import enabled as comm_trace_enabled
+from sglang_omni.profiler.comm_trace import elapsed_ms as comm_trace_elapsed_ms
+from sglang_omni.profiler.comm_trace import now_ns as comm_trace_now_ns
 from sglang_omni.proto import DataReadyMessage, StagePayload
 from sglang_omni.proto.messages import (
     DirectCudaIpcPayloadRef,
@@ -296,9 +298,27 @@ async def read_direct_cuda_ipc_payload(
     else:
         pass
 
-    receive_task = asyncio.create_task(
-        asyncio.to_thread(deserialize_direct_cuda_ipc_payload, data_ref)
+    receive_enqueued_ns = comm_trace_now_ns()
+
+    def deserialize_traced() -> StagePayload:
+        # diagnosis (p1-diag): worker-pool queue wait plus end-to-end import time
+        queue_wait_ms = comm_trace_elapsed_ms(receive_enqueued_ns)
+        import_started_ns = comm_trace_now_ns()
+        payload = deserialize_direct_cuda_ipc_payload(data_ref)
+        comm_trace(
+            "cuda_ipc_receive_done",
+            request_id=payload.request_id,
+            queue_wait_ms=round(queue_wait_ms, 3),
+            import_ms=round(comm_trace_elapsed_ms(import_started_ns), 3),
+        )
+        return payload
+
+    receive_target = (
+        deserialize_traced
+        if comm_trace_enabled()
+        else deserialize_direct_cuda_ipc_payload
     )
+    receive_task = asyncio.create_task(asyncio.to_thread(receive_target))
     PENDING_IPC_READS.add(receive_task)
     is_abandoned = False
 
@@ -417,14 +437,18 @@ def deserialize_direct_cuda_ipc_payload(
         tensors[path] = tensor
     if data_ref.get("materialize_cuda_tensors", False):
         # note (OpenAI): IPC deletion only fences its current stream, so publish owned storage.
+        clone_started_ns = comm_trace_now_ns()
         owned_tensors = {
             path: tensor.clone(memory_format=torch.contiguous_format)
             for path, tensor in tensors.items()
         }
+        clone_ms = comm_trace_elapsed_ms(clone_started_ns)
+        sync_started_ns = comm_trace_now_ns()
         for device in {tensor.device for tensor in owned_tensors.values()}:
             ready_event = torch.cuda.Event()
             ready_event.record(torch.cuda.current_stream(device))
             ready_event.synchronize()
+        sync_wait_ms = comm_trace_elapsed_ms(sync_started_ns)
         tensors = owned_tensors
         comm_trace(
             "comm_payload_device_ready",
@@ -433,6 +457,8 @@ def deserialize_direct_cuda_ipc_payload(
             tensor_bytes=sum(
                 tensor.numel() * tensor.element_size() for tensor in tensors.values()
             ),
+            clone_ms=round(clone_ms, 3),
+            sync_wait_ms=round(sync_wait_ms, 3),
         )
     else:
         pass
