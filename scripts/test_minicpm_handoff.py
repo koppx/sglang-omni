@@ -700,6 +700,12 @@ def run_trial(
         PYTHONPATH=str(checkout),
         SGLANG_OMNI_COMM_TRACE="1" if trial.phase == "smoke" else "0",
     )
+    if trial.phase == "smoke":
+        # The size gate routes small payloads to the pooled relay, so force
+        # the direct-IPC branch during smoke to keep its assertion meaningful.
+        server_environment["SGLANG_OMNI_DIRECT_IPC_MIN_BYTES"] = "1"
+    else:
+        pass
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", settings.port))
     command = [
