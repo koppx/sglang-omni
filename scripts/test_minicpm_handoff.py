@@ -707,6 +707,9 @@ def run_trial(
     else:
         pass
     with socket.socket() as listener:
+        # A killed server leaves TIME_WAIT sockets on the port; REUSEADDR
+        # lets this preflight pass while a live listener still conflicts.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", settings.port))
     command = [
         settings.python,
