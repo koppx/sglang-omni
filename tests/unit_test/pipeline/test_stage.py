@@ -1156,6 +1156,11 @@ def test_stage_sends_same_gpu_cuda_payload_as_direct_cuda_ipc(monkeypatch) -> No
     monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
     monkeypatch.setattr(
         stage_io,
+        "payload_cuda_tensor_bytes",
+        lambda payload: 16 * 1024 * 1024,
+    )
+    monkeypatch.setattr(
+        stage_io,
         "serialize_direct_cuda_ipc_payload",
         lambda payload: {
             "_type": "TorchCudaIpcPayload",
@@ -1761,7 +1766,7 @@ def test_stage_routes_audio_cuda_payload_over_relay_when_direct_is_disabled(
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_unrelated_stage_still_uses_direct_ipc_for_small_cuda_payload() -> None:
+def test_unrelated_stage_still_uses_direct_ipc_for_cuda_payload() -> None:
     async def run() -> None:
         relay = FakeRelay()
         control_plane = RecordingStageControlPlane()
@@ -1778,7 +1783,9 @@ def test_unrelated_stage_still_uses_direct_ipc_for_small_cuda_payload() -> None:
             stage_gpu_ids={"mm_aggregate": (0,)},
         )
 
-        tensor = torch.zeros(63, 2048, dtype=torch.bfloat16, device="cuda:0")
+        # Direct IPC is size-gated; only payloads at or above the threshold
+        # exercise the zero-copy branch this test guards.
+        tensor = torch.zeros(2304, 2048, dtype=torch.bfloat16, device="cuda:0")
         payload = make_stage_payload(request_id="req-small-hop", data={"t": tensor})
         await sender.send_to_stage("req-small-hop", "mm_aggregate", payload)
 
