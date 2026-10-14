@@ -831,6 +831,10 @@ def run_trial(
             trial.metrics = validate_speed(
                 directory / "speed_results.json", trial.samples
             )
+            # The shared scratch volume runs near capacity; once the metrics
+            # gate has verified the audio files exist, drop the bulk wavs and
+            # keep the logs, per-request records and GPU samples.
+            shutil.rmtree(directory / "audio", ignore_errors=True)
         finally:
             stop_process(server, gpu=settings.gpu)
     if trial.phase == "smoke" and trial.arm == "p1":
