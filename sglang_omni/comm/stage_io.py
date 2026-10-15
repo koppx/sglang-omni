@@ -37,6 +37,7 @@ from sglang_omni.relay.base import Relay, RelayOperation
 
 logger = logging.getLogger(__name__)
 PENDING_IPC_READS: set[asyncio.Task[StagePayload]] = set()
+PACKED_TENSOR_ALIGNMENT_BYTES = 256
 
 
 class StageMessageSender(Protocol):
@@ -921,7 +922,7 @@ def pack_tensors(
             flat = flat.to(device=target_device)
         else:
             pass
-        padding = pad_offset(offset, dtype_alignment(tensor.dtype))
+        padding = pad_offset(offset, max(PACKED_TENSOR_ALIGNMENT_BYTES, dtype_alignment(tensor.dtype)))
         if padding:
             chunks.append(torch.zeros(padding, dtype=torch.uint8, device=target_device))
             offset += padding
