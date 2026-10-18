@@ -135,6 +135,7 @@ def create_sglang_talker_executor_from_config(
     server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
     session_mode: bool = False,
+    conditioning_graph_rows: tuple[int, ...] = (),
 ) -> OmniScheduler[SGLangARRequestData]:
     """Returns OmniScheduler for the native sglang MiniCPM-o talker."""
     concrete_device = resolve_concrete_device(device, gpu_id)
@@ -185,6 +186,7 @@ def create_sglang_talker_executor_from_config(
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         session_mode=session_mode,
+        conditioning_graph_rows=conditioning_graph_rows,
     )
     logger.info(
         f"sglang_ar_started stage=talker gpu_id={gpu_id} "

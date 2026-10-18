@@ -23,6 +23,7 @@ def create_talker_scheduler(
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
     session_mode: bool = False,
+    conditioning_graph_rows: tuple[int, ...] = (),
 ) -> OmniScheduler[SGLangARRequestData]:
     """Create a codec scheduler with per-request condition embeddings."""
     from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -73,6 +74,10 @@ def create_talker_scheduler(
     )
 
     model = model_worker.model_runner.model
+    if conditioning_graph_rows:
+        model.projector_semantic.capture_graphs(conditioning_graph_rows)
+    else:
+        pass
     # note (MayDomine): graph sampling buffers must use the codec vocabulary size.
     codec_vocab_size = model.num_audio_tokens
     model_config.vocab_size = codec_vocab_size

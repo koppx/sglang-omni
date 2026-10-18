@@ -59,6 +59,16 @@ def test_gpu_handoff_configuration_reaches_only_the_thinker(enabled: bool) -> No
     assert not MiniCPMOSpeechPipelineConfig(model_path="model").enable_gpu_handoff
 
 
+def test_conditioning_graph_rows_survive_typed_config_round_trip() -> None:
+    config = MiniCPMOSpeechPipelineConfig(model_path="model")
+    talker = next(stage for stage in config.stages if stage.name == "talker")
+    assert talker.factory.conditioning_graph_rows == ()
+    talker.factory.conditioning_graph_rows = (8, 16, 32)
+    restored = MiniCPMOSpeechPipelineConfig.model_validate(config.model_dump())
+    restored_talker = next(stage for stage in restored.stages if stage.name == "talker")
+    assert restored_talker.factory.conditioning_graph_rows == (8, 16, 32)
+
+
 @pytest.fixture
 def snapshot(tmp_path: Path) -> Path:
     config = {

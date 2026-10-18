@@ -105,6 +105,115 @@ def test_talker_request_builder_returns_inference_conditioning() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_projector_graph_replay_preserves_owned_outputs_across_streams() -> None:
+    projector = MiniCPMTTSProjector(32, 16).to(device="cuda", dtype=torch.bfloat16)
+    reference = MiniCPMTTSProjector(32, 16).to(device="cuda", dtype=torch.bfloat16)
+    reference.load_state_dict(projector.state_dict())
+    projector.capture_graphs((2, 3))
+    streams = [torch.cuda.Stream(), torch.cuda.Stream()]
+    outputs: list[torch.Tensor] = []
+    expected: list[torch.Tensor] = []
+    torch.cuda.synchronize()
+    with torch.no_grad():
+        for index, rows in enumerate([2, 2, 3, 3, 2, 3] * 8):
+            with torch.cuda.stream(streams[index % 2]):
+                hidden = torch.randn(rows, 32, device="cuda", dtype=torch.bfloat16)
+                outputs.append(projector(hidden))
+                expected.append(reference(hidden))
+        fallback = torch.randn(5, 32, device="cuda", dtype=torch.bfloat16)
+        torch.testing.assert_close(
+            projector(fallback), reference(fallback), rtol=0, atol=0
+        )
+    torch.cuda.synchronize()
+    for actual, target in zip(outputs, expected):
+        torch.testing.assert_close(actual, target, rtol=0, atol=0)
+    assert len({output.data_ptr() for output in outputs}) == len(outputs)
+    assert len(projector.graph_replay.captures) == 2
+    with pytest.raises(RuntimeError, match="already captured"):
+        projector.capture_graphs((2,))
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_talker_request_builder_disables_grad_for_graph_replay(monkeypatch) -> None:
+    model = bare_model().to(device="cuda", dtype=torch.bfloat16)
+    model.projector_semantic.capture_graphs((2,))
+    calls: list[bool] = []
+    replay = model.projector_semantic.graph_replay.replay
+
+    def record_replay(hidden_states: torch.Tensor) -> torch.Tensor | None:
+        result = replay(hidden_states)
+        calls.append(result is not None)
+        return result
+
+    monkeypatch.setattr(model.projector_semantic.graph_replay, "replay", record_replay)
+    builder, _ = make_talker_scheduler_adapters(
+        model=model,
+        codec_vocab_size=32,
+        codec_eos_id=31,
+        tts_bos_token_id=30,
+        tts_eos_token_id=31,
+    )
+    payload = StagePayload(
+        request_id="graph-builder",
+        request=OmniRequest(inputs=None),
+        data={
+            "prompt": {
+                "input_ids": torch.tensor([30, 11, 12, 31]),
+                "known_tts_output_ids": [11, 12],
+            },
+            "thinker_out": {
+                "extra_model_outputs": {
+                    "hidden_states_seq": torch.randn(
+                        2, LLM_DIM, device="cuda", dtype=torch.bfloat16
+                    )
+                }
+            },
+        },
+    )
+    with torch.enable_grad():
+        request = builder(payload)
+    assert calls == [True]
+    assert not request.prefill_input_embeds.requires_grad
+
+
+def test_projector_graph_capture_rejects_cpu_weights() -> None:
+    with pytest.raises(ValueError, match="CUDA weights"):
+        MiniCPMTTSProjector(32, 16).capture_graphs((2,))
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_projector_graph_preserves_training_fallback_and_state_dict() -> None:
+    projector = MiniCPMTTSProjector(32, 16).to(device="cuda", dtype=torch.bfloat16)
+    reference = MiniCPMTTSProjector(32, 16).to(device="cuda", dtype=torch.bfloat16)
+    reference.load_state_dict(projector.state_dict())
+    names = set(projector.state_dict())
+    projector.capture_graphs((2, 2))
+    assert set(projector.state_dict()) == names
+    assert len(projector.graph_replay.captures) == 1
+    hidden = torch.randn(2, 32, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    with torch.enable_grad():
+        actual = projector(hidden)
+        expected = reference(hidden)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        actual.float().sum().backward()
+    assert hidden.grad is not None
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("row_counts", [(), (0,), (-1,), (2, 0)])
+def test_projector_graph_capture_rejects_invalid_shapes(
+    row_counts: tuple[int, ...],
+) -> None:
+    projector = MiniCPMTTSProjector(32, 16).to(device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="positive"):
+        projector.capture_graphs(row_counts)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("prompt_token_count", [35, 36, 37, 51])
 def test_packed_hidden_preserves_frozen_conditioning(
     prompt_token_count: int,

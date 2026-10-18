@@ -103,12 +103,24 @@ def decode_stage(*, process: str) -> StageConfig:
     )
 
 
+class MiniCPMOTalkerFactoryArgs(FactoryArgs):
+    """Exact conditioning projection shapes captured before request admission."""
+
+    conditioning_graph_rows: tuple[int, ...] = ()
+
+
+class MiniCPMOTalkerStageConfig(EngineStageConfig):
+    factory: MiniCPMOTalkerFactoryArgs = Field(
+        default_factory=MiniCPMOTalkerFactoryArgs
+    )
+
+
 def talker_stage(*, gpu: int, process: str) -> StageConfig:
-    return EngineStageConfig(
+    return MiniCPMOTalkerStageConfig(
         name="talker",
         process=process,
         factory_path=f"{PKG}.stages.create_sglang_talker_executor_from_config",
-        factory=FactoryArgs(max_seq_len=4096),
+        factory=MiniCPMOTalkerFactoryArgs(max_seq_len=4096),
         gpu=gpu,
         next="code2wav",
         project_payload={
@@ -220,7 +232,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         THINKER_STAGE: EngineStageConfig,
-        "talker": EngineStageConfig,
+        "talker": MiniCPMOTalkerStageConfig,
         "code2wav": MiniCPMOCode2WavStageConfig,
     }
 
