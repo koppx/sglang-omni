@@ -198,6 +198,7 @@ def make_talker_scheduler_adapters(
 ]:
     """Build StagePayload <-> scheduler adapters for the sglang talker."""
 
+    @torch.no_grad()
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
         payload.wait_for_tensor_ready()
         state = MiniCPMOPipelineState.from_dict(payload.data)
