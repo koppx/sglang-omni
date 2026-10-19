@@ -122,7 +122,7 @@ class DataRef(msgspec.Struct, frozen=True):
     transport: TransportKind
     layout: DataLayout
     buffer: BackendRef
-    header: str | None = None
+    header: str | bytes | None = None
     tensors: tuple[TensorMeta, ...] = ()
     shape: tuple[int, ...] | None = None
     dtype: str | None = None
@@ -182,6 +182,11 @@ class DataRef(msgspec.Struct, frozen=True):
             raise ValueError(f"unsupported DataRef version {version}")
         else:
             pass
+        header = value.get("header")
+        if header is not None and type(header) not in (str, bytes):
+            raise TypeError("header must be str, bytes or None")
+        else:
+            pass
         return cls(
             version=version,
             kind=DataKind(required(value, "kind", str)),
@@ -189,7 +194,7 @@ class DataRef(msgspec.Struct, frozen=True):
             transport=TransportKind(required(value, "transport", str)),
             layout=DataLayout(required(value, "layout", str)),
             buffer=BackendRef.from_dict(required(value, "buffer", dict)),
-            header=optional(value, "header", str),
+            header=header,
             tensors=tuple(
                 TensorMeta.from_dict(item) for item in required(value, "tensors", list)
             ),
