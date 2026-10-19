@@ -9,7 +9,7 @@ import io
 import logging
 import math
 import pickle
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from multiprocessing.reduction import ForkingPickler
 from typing import Protocol, overload
 
@@ -38,6 +38,20 @@ from sglang_omni.relay.base import Relay, RelayOperation
 logger = logging.getLogger(__name__)
 PENDING_IPC_READS: set[asyncio.Task[StagePayload]] = set()
 PACKED_TENSOR_ALIGNMENT_BYTES = 256
+INLINE_HOST_TENSOR_LIMIT_BYTES = 64 * 1024
+
+
+@dataclass(kw_only=True)
+class HostTensorRegion:
+    shape: tuple[int, ...]
+    dtype: str
+    contents: bytes
+
+
+@dataclass(kw_only=True)
+class MixedDevicePayloadHeader:
+    payload: StagePayload
+    host_tensors: dict[str, HostTensorRegion]
 
 
 class StageMessageSender(Protocol):
@@ -627,6 +641,27 @@ async def write_payload(
 ) -> tuple[DataRef, RelayOperation]:
     payload.wait_for_tensor_ready()
     data_without_tensors, tensors = extract_tensors(payload.data)
+    host_tensors: dict[str, HostTensorRegion] = {}
+    if transport is TransportKind.CUDA_IPC:
+        remaining_bytes = INLINE_HOST_TENSOR_LIMIT_BYTES
+        for path, tensor in list(tensors.items()):
+            size_bytes = tensor.numel() * tensor.element_size()
+            if tensor.device.type == "cpu" and size_bytes <= remaining_bytes:
+                host_tensors[path] = HostTensorRegion(
+                    shape=tuple(tensor.shape),
+                    dtype=str(tensor.dtype),
+                    contents=tensor.contiguous()
+                    .reshape(-1)
+                    .view(torch.uint8)
+                    .numpy()
+                    .tobytes(),
+                )
+                tensors.pop(path)
+                remaining_bytes -= size_bytes
+            else:
+                pass
+    else:
+        pass
     for tensor in tensors.values():
         if tensor.is_cuda:
             tensor.record_stream(torch.cuda.current_stream(tensor.device))
@@ -653,7 +688,11 @@ async def write_payload(
             transport=transport,
             relay_info=op.metadata,
         ),
-        header=pickle.dumps(header),
+        header=pickle.dumps(
+            MixedDevicePayloadHeader(payload=header, host_tensors=host_tensors)
+            if host_tensors
+            else header
+        ),
         tensors=tuple(entries),
     )
     return data_ref, op
@@ -678,7 +717,20 @@ async def read_payload(
         if isinstance(data_ref.header, bytes)
         else base64.b64decode(data_ref.header)
     )
-    header = pickle.loads(header_bytes)
+    decoded_header = pickle.loads(header_bytes)
+    if isinstance(decoded_header, MixedDevicePayloadHeader):
+        header = decoded_header.payload
+        host_tensors = decoded_header.host_tensors
+        if (
+            sum(len(region.contents) for region in host_tensors.values())
+            > INLINE_HOST_TENSOR_LIMIT_BYTES
+        ):
+            raise ValueError("inline host tensors exceed the payload byte limit")
+        else:
+            pass
+    else:
+        header = decoded_header
+        host_tensors = {}
     transfer_buf = await read_transfer_buffer(relay, request_id, data_ref)
     tensors = {
         entry.path: restore_tensor_device(
@@ -690,6 +742,23 @@ async def read_payload(
         )
         for entry in data_ref.tensors
     }
+    for path, region in host_tensors.items():
+        if path in tensors:
+            raise ValueError(f"duplicate tensor path in payload header: {path}")
+        else:
+            pass
+        dtype = torch_dtype(region.dtype)
+        expected_bytes = math.prod(region.shape) * dtype.itemsize
+        if (
+            any(size < 0 for size in region.shape)
+            or len(region.contents) != expected_bytes
+        ):
+            raise ValueError(f"invalid host tensor byte length for {path}")
+        elif expected_bytes:
+            tensor = torch.frombuffer(bytearray(region.contents), dtype=dtype)
+            tensors[path] = tensor.reshape(region.shape)
+        else:
+            tensors[path] = torch.empty(region.shape, dtype=dtype)
     relay.cleanup(request_id)
     return StagePayload(
         request_id=header.request_id,
@@ -927,7 +996,9 @@ def pack_tensors(
             flat = flat.to(device=target_device)
         else:
             pass
-        padding = pad_offset(offset, max(PACKED_TENSOR_ALIGNMENT_BYTES, dtype_alignment(tensor.dtype)))
+        padding = pad_offset(
+            offset, max(PACKED_TENSOR_ALIGNMENT_BYTES, dtype_alignment(tensor.dtype))
+        )
         if padding:
             chunks.append(torch.zeros(padding, dtype=torch.uint8, device=target_device))
             offset += padding

@@ -458,6 +458,78 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "host_tensor",
+    [torch.tensor(7), torch.empty(0, 3), torch.arange(24).reshape(4, 6)[:, ::2]],
+)
+def test_cuda_transport_keeps_small_host_tensors_out_of_device_buffer(
+    host_tensor: torch.Tensor,
+) -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        payload = make_stage_payload(
+            request_id="host-inline", data={"tokens": host_tensor}
+        )
+        reference, operation = await stage_io.write_payload(
+            relay, payload.request_id, payload, transport=TransportKind.CUDA_IPC
+        )
+        assert reference.tensors == ()
+        restored = await stage_io.read_payload(relay, payload.request_id, reference)
+        assert restored.data["tokens"].device.type == "cpu"
+        assert restored.data["tokens"].dtype == host_tensor.dtype
+        assert torch.equal(restored.data["tokens"], host_tensor)
+        operation.mark_receiver_done()
+        await operation.wait_for_completion()
+
+    asyncio.run(run())
+
+
+def test_cuda_transport_bounds_total_inline_host_tensor_bytes() -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        first = torch.zeros(stage_io.INLINE_HOST_TENSOR_LIMIT_BYTES, dtype=torch.uint8)
+        second = torch.ones(1, dtype=torch.uint8)
+        payload = make_stage_payload(
+            request_id="host-budget", data={"first": first, "second": second}
+        )
+        reference, operation = await stage_io.write_payload(
+            relay, payload.request_id, payload, transport=TransportKind.CUDA_IPC
+        )
+        assert [entry.path for entry in reference.tensors] == ["second"]
+        restored = await stage_io.read_payload(relay, payload.request_id, reference)
+        assert tensor_equal(restored.data, payload.data)
+        operation.mark_receiver_done()
+        await operation.wait_for_completion()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("oversized", [False, True])
+def test_inline_host_tensor_header_rejects_invalid_lengths(oversized: bool) -> None:
+    async def run() -> None:
+        relay = FakeRelay()
+        payload = make_stage_payload(
+            request_id="bad-host-header", data={"tokens": torch.ones(2)}
+        )
+        reference, operation = await stage_io.write_payload(
+            relay, payload.request_id, payload, transport=TransportKind.CUDA_IPC
+        )
+        header = pickle.loads(reference.header)
+        header.host_tensors["tokens"].contents = (
+            b"x" * (stage_io.INLINE_HOST_TENSOR_LIMIT_BYTES + 1) if oversized else b"x"
+        )
+        serialized = reference.to_dict()
+        serialized["header"] = pickle.dumps(header)
+        with pytest.raises(ValueError, match="byte limit|byte length"):
+            await stage_io.read_payload(
+                relay, payload.request_id, DataRef.from_dict(serialized)
+            )
+        operation.mark_receiver_done()
+        await operation.wait_for_completion()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("legacy_header", [False, True])
 def test_payload_header_round_trips_binary_control_plane(
     legacy_header: bool,
