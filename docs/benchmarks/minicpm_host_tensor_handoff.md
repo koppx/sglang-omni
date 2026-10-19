@@ -90,6 +90,27 @@ relay run is formal-c32-v2. Raw artifacts are under
 handoff-results/host-bytes-20261019, including curated-paired.json,
 curated-source-verified-regression.log, resident-typed and formal-c32-v2.
 
+## Final exact-commit guardrails
+
+The agreed final experiment used source archives of commit 2d62ac443, excluding
+all unstaged relay/packing experiments. Reference differs only by setting the
+host-inline byte budget to zero. Both c16 and c32 completed all sixteen windows
+(ABBA starts, four 1060-request windows per start, first window excluded).
+
+| c | Reference median req/s | Candidate median req/s | QPS change | Reference median E2E p95 s | Candidate median E2E p95 s |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 9.4600 | 9.4855 | +0.27% | 2.2610 | 2.2790 |
+| 32 | 12.7220 | 12.6185 | -0.81% | 3.3615 | 3.3810 |
+
+E2E p95 changed +0.80% at c16 and +0.58% at c32. These observations do not
+establish service acceleration or statistical equivalence. This patch's accepted
+scope is removal of host-metadata device copies and the measured isolated paired
+transport improvement, not a universal latency/throughput win. All window metrics,
+including warmup windows, are published in minicpm_handoff_delivery_results.json.
+No additional candidate experiments were started after this final validation.
+Original logs and generated audio remain local under committed-formal-c16 and
+committed-formal-c32. GPU compute processes were absent at completion.
+
 ## Reproduction
 
 Use an exclusively allocated CUDA GPU and the repository's pinned environment:
