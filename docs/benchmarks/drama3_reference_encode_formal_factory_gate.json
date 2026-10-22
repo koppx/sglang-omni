@@ -832,4 +832,563 @@
     "minimal_fix": {"runtime_touched_lines":20,"scope":"Only long encoding reuses one existing execution stream across host threads; hot path unchanged.","memory_arms":[{"arm":"baseline0","artifact":"drama3-profile-444026/reference-production-memory-recovery-v1/memory0.json","artifact_sha256":"fdf38633f357099a6cff62254f3823cc585d13ee34deedec78444c794f84d285","calls":18,"round_end_allocation_retries":[0,0,0,0,0,0],"ooms_max":0,"peak_reserved_bytes":6255804416,"peak_allocated_bytes":5141112320,"budget_bytes":6442450944,"no_empty_cache":true,"pins":{"control_sha256":"c0a210dc1d87c44fa53b8252b009119dbe5554369519ba811288cddd53f2b738","harness_sha256":"2107f7ab34032cee3fe76b0805bdfb146128e7176930cfee511ff5eea8f0b592","source_factory_gate_sha256":"86c58ef139aa5cbb12e3a69cf7047c1ba5c1e5353ae33b148054925ef347a80c"},"exact_baseline_envelope_matches":0},{"arm":"old_B_alternating","artifact":"drama3-profile-444026/reference-production-memory-recovery-v1/memory2.json","artifact_sha256":"6764bb5e4dd467bbc6532f597c7640ef6635999772945b6c08a246cfcbda76c0","calls":18,"round_end_allocation_retries":[1,1,2,2,3,3],"ooms_max":0,"peak_reserved_bytes":6431965184,"peak_allocated_bytes":5172883968,"budget_bytes":6442450944,"no_empty_cache":true,"pins":{"control_sha256":"c0a210dc1d87c44fa53b8252b009119dbe5554369519ba811288cddd53f2b738","harness_sha256":"2107f7ab34032cee3fe76b0805bdfb146128e7176930cfee511ff5eea8f0b592","source_factory_gate_sha256":"86c58ef139aa5cbb12e3a69cf7047c1ba5c1e5353ae33b148054925ef347a80c"},"exact_baseline_envelope_matches":18},{"arm":"fixed_worker","artifact":"drama3-profile-444026/reference-production-memory-fixed-long-v1/memory2.json","artifact_sha256":"81c07bc63cb8478b1c0e05c4b21aa5611a8e0e6927f3d7257d12e792f9502400","calls":18,"round_end_allocation_retries":[1,1,1,1,1,1],"ooms_max":0,"peak_reserved_bytes":6295650304,"peak_allocated_bytes":5172883968,"budget_bytes":6442450944,"no_empty_cache":true,"pins":{"control_sha256":"c0a210dc1d87c44fa53b8252b009119dbe5554369519ba811288cddd53f2b738","harness_sha256":"e82b610e3e8a547e11fd482f32d27add2780775a447a50ee5977ef8117ac036a","source_factory_gate_sha256":"86c58ef139aa5cbb12e3a69cf7047c1ba5c1e5353ae33b148054925ef347a80c"},"exact_baseline_envelope_matches":18},{"arm":"stable_execution_stream","artifact":"drama3-profile-444026/reference-production-memory-stable-stream-v1/memory2.json","artifact_sha256":"22f26be53d610374db142315167f96de9132d2c1f6b8c5b03f32af190e44cb38","calls":18,"round_end_allocation_retries":[1,1,1,1,1,1],"ooms_max":0,"peak_reserved_bytes":6295650304,"peak_allocated_bytes":5205389824,"budget_bytes":6442450944,"no_empty_cache":true,"pins":{"control_sha256":"c0a210dc1d87c44fa53b8252b009119dbe5554369519ba811288cddd53f2b738","harness_sha256":"87a25ddc8e053ac5abb0ab4800dabfb1ec01162f207793d3129cdb41b4140ecd","parent_memory_harness_sha256":"e82b610e3e8a547e11fd482f32d27add2780775a447a50ee5977ef8117ac036a","source_factory_gate_sha256":"86c58ef139aa5cbb12e3a69cf7047c1ba5c1e5353ae33b148054925ef347a80c"},"exact_baseline_envelope_matches":18}],"stable_stream_long_calls":6,"alternating_host_threads":2,"codebook_count":10,"live_allocation_oneoff_increase_bytes":33554432,"live_allocation_plateau_bytes":1794722304,"plateau_ownership":"unknown; not zero additional overhead","recorded_cpu_verification":{"passed":198,"accelerator_deselected":4,"independent_review":"no verified blocker","new_hot_cache_cpu_tests":"factory streams 0 and 2","cpu_device_boundary_tests":"fixed"},"verification_rerun_for_this_doc":false,"recorded_tooling":{"python_and_style":"passed in coordinator full pre-commit run","rust":"cargo missing, exit 127; full pre-commit did not pass","rerun_for_this_documentation":false}},
     "postfix": {"artifact":"drama3-reference-postfix-acceptance-v1/formal-postfix-summary.json","artifact_sha256":"3744be4e836e0b131c21ada7d5ef7ec12cecc45a0d3fbf5894013439d5c64757","criteria_sha256":"3cf43e8dfd87618bd1439a0040c4eff14362f8b1c7e85b98a3aaa1f8d10f60a5","fresh_boots":4,"visit_order":["A1","B1","B2","A2"],"measured_requests":768,"discarded_warmup_requests":128,"total_completed_requests":896,"criteria":{"frozen_before_gpu":true,"scope":"Natural uninstrumented service acceptance, four fresh A1/B1/B2/A2 services; no cache observer or sitecustomize","pairs":[["A1","B1"],["A2","B2"]],"comparisons":"Each pair, separately for cold, hot1 and hot2; hot repeats are not independent server replicates","cold":{"output_throughput_B_over_A":">1.0"},"hot1_and_hot2":{"output_throughput_B_over_A":">=0.95","latency_p95_B_over_A":"<=1.05","audio_ttfp_p95_B_over_A":"<=1.05"},"all_measured_phases":{"c100_B":">=paired_A","failed_requests_B":"<=paired_A","max_token_hits_B":"<=paired_A"},"uncertainty":"Only two paired service replicates. Passing engineering thresholds is not statistical non-inferiority; workload variation and intervals may leave evidence insufficient.","no_filtering":"Preserve every request, cap, failure, underrun and output length. No automatic retries.","budget_seconds_including_startup_cleanup":3600,"boots_max":4},"integrity":{"criteria_matches_frozen_plan":true,"runner_matches_plan":true,"source_pin_transition_matches_plan":true,"source_pins_current_match":true,"cohort_hashes_match":true},"criterion_count":32,"failed_criteria":[{"baseline":"A1","treatment":"B1","phase":"cold","metric":"max_token_hits","baseline_value":0,"treatment_value":1,"B_over_A":null,"operation":"value_le","threshold":null,"passed":false},{"baseline":"A2","treatment":"B2","phase":"hot2","metric":"latency_p95_s","baseline_value":3.138,"treatment_value":3.322,"B_over_A":1.0586360739324412,"operation":"ratio_le","threshold":1.05,"passed":false},{"baseline":"A2","treatment":"B2","phase":"hot2","metric":"audio_ttfp_p95_s","baseline_value":0.4848,"treatment_value":0.5118,"B_over_A":1.0556930693069306,"operation":"ratio_le","threshold":1.05,"passed":false}],"engineering_guard_status":"one_or_more_failed","cells":{"A1/warmup-discard":{"summary":{"total_requests":32,"completed_requests":32,"failed_requests":0,"max_token_hits":0,"latency_p95_s":4.872,"output_throughput":401.5,"output_tokens_total":2686,"audio_ttfp_p95_s":3.0486,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":32}},"A1/cold":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":5.112,"output_throughput":329.8,"output_tokens_total":5198,"audio_ttfp_p95_s":3.4704,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":64}},"A1/hot1":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":3.401,"output_throughput":584.8,"output_tokens_total":4970,"audio_ttfp_p95_s":0.6798,"c50":98.44,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[{"id":"common_voice_en_17444666-common_voice_en_17444667","seconds":0.0682}],"finish_reasons":{"stop":64}},"A1/hot2":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":3.38,"output_throughput":544.2,"output_tokens_total":5049,"audio_ttfp_p95_s":0.6297,"c50":95.31,"c100":98.44},"errors":[],"capped_ids":[],"underruns":[{"id":"common_voice_en_17444666-common_voice_en_17444667","seconds":0.1641},{"id":"common_voice_en_17784-common_voice_en_17785","seconds":0.0635},{"id":"common_voice_en_177895-common_voice_en_177894","seconds":0.0634}],"finish_reasons":{"stop":64}},"B1/warmup-discard":{"summary":{"total_requests":32,"completed_requests":32,"failed_requests":0,"max_token_hits":0,"latency_p95_s":3.66,"output_throughput":524.9,"output_tokens_total":2700,"audio_ttfp_p95_s":1.3999,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":32}},"B1/cold":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":1,"latency_p95_s":3.715,"output_throughput":540.5,"output_tokens_total":5331,"audio_ttfp_p95_s":1.5593,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":["common_voice_en_17263752-common_voice_en_17263750"],"underruns":[],"finish_reasons":{"stop":63,"length":1}},"B1/hot1":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":3.004,"output_throughput":627.4,"output_tokens_total":4932,"audio_ttfp_p95_s":0.5291,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":64}},"B1/hot2":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":3.288,"output_throughput":640.4,"output_tokens_total":5009,"audio_ttfp_p95_s":0.5398,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":64}},"B2/warmup-discard":{"summary":{"total_requests":32,"completed_requests":32,"failed_requests":0,"max_token_hits":0,"latency_p95_s":3.464,"output_throughput":548.7,"output_tokens_total":2622,"audio_ttfp_p95_s":1.4301,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":32}},"B2/cold":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":3.289,"output_throughput":570.6,"output_tokens_total":5112,"audio_ttfp_p95_s":1.5193,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":64}},"B2/hot1":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":2.984,"output_throughput":627.9,"output_tokens_total":4836,"audio_ttfp_p95_s":0.5254,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":64}},"B2/hot2":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":3.322,"output_throughput":628.6,"output_tokens_total":5064,"audio_ttfp_p95_s":0.5118,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":64}},"A2/warmup-discard":{"summary":{"total_requests":32,"completed_requests":32,"failed_requests":0,"max_token_hits":0,"latency_p95_s":4.201,"output_throughput":474.8,"output_tokens_total":2687,"audio_ttfp_p95_s":2.2644,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":32}},"A2/cold":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":4.481,"output_throughput":381.7,"output_tokens_total":5193,"audio_ttfp_p95_s":3.0139,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":64}},"A2/hot1":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":3.015,"output_throughput":643.7,"output_tokens_total":4891,"audio_ttfp_p95_s":0.5442,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":64}},"A2/hot2":{"summary":{"total_requests":64,"completed_requests":64,"failed_requests":0,"max_token_hits":0,"latency_p95_s":3.138,"output_throughput":617.6,"output_tokens_total":4946,"audio_ttfp_p95_s":0.4848,"c50":100.0,"c100":100.0},"errors":[],"capped_ids":[],"underruns":[],"finish_reasons":{"stop":64}}},"comparison_criteria":{"B1_vs_A1/cold":[{"baseline":"A1","treatment":"B1","phase":"cold","metric":"output_throughput","baseline_value":329.8,"treatment_value":540.5,"B_over_A":1.638872043662826,"operation":"ratio_gt","threshold":1.0,"passed":true},{"baseline":"A1","treatment":"B1","phase":"cold","metric":"c100","baseline_value":100.0,"treatment_value":100.0,"B_over_A":1.0,"operation":"value_ge","threshold":null,"passed":true},{"baseline":"A1","treatment":"B1","phase":"cold","metric":"failed_requests","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true},{"baseline":"A1","treatment":"B1","phase":"cold","metric":"max_token_hits","baseline_value":0,"treatment_value":1,"B_over_A":null,"operation":"value_le","threshold":null,"passed":false}],"B1_vs_A1/hot1":[{"baseline":"A1","treatment":"B1","phase":"hot1","metric":"output_throughput","baseline_value":584.8,"treatment_value":627.4,"B_over_A":1.0728454172366622,"operation":"ratio_ge","threshold":0.95,"passed":true},{"baseline":"A1","treatment":"B1","phase":"hot1","metric":"latency_p95_s","baseline_value":3.401,"treatment_value":3.004,"B_over_A":0.8832696265804175,"operation":"ratio_le","threshold":1.05,"passed":true},{"baseline":"A1","treatment":"B1","phase":"hot1","metric":"audio_ttfp_p95_s","baseline_value":0.6798,"treatment_value":0.5291,"B_over_A":0.7783171521035599,"operation":"ratio_le","threshold":1.05,"passed":true},{"baseline":"A1","treatment":"B1","phase":"hot1","metric":"c100","baseline_value":100.0,"treatment_value":100.0,"B_over_A":1.0,"operation":"value_ge","threshold":null,"passed":true},{"baseline":"A1","treatment":"B1","phase":"hot1","metric":"failed_requests","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true},{"baseline":"A1","treatment":"B1","phase":"hot1","metric":"max_token_hits","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true}],"B1_vs_A1/hot2":[{"baseline":"A1","treatment":"B1","phase":"hot2","metric":"output_throughput","baseline_value":544.2,"treatment_value":640.4,"B_over_A":1.1767732451304667,"operation":"ratio_ge","threshold":0.95,"passed":true},{"baseline":"A1","treatment":"B1","phase":"hot2","metric":"latency_p95_s","baseline_value":3.38,"treatment_value":3.288,"B_over_A":0.9727810650887574,"operation":"ratio_le","threshold":1.05,"passed":true},{"baseline":"A1","treatment":"B1","phase":"hot2","metric":"audio_ttfp_p95_s","baseline_value":0.6297,"treatment_value":0.5398,"B_over_A":0.8572336033031601,"operation":"ratio_le","threshold":1.05,"passed":true},{"baseline":"A1","treatment":"B1","phase":"hot2","metric":"c100","baseline_value":98.44,"treatment_value":100.0,"B_over_A":1.0158472165786265,"operation":"value_ge","threshold":null,"passed":true},{"baseline":"A1","treatment":"B1","phase":"hot2","metric":"failed_requests","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true},{"baseline":"A1","treatment":"B1","phase":"hot2","metric":"max_token_hits","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true}],"B2_vs_A2/cold":[{"baseline":"A2","treatment":"B2","phase":"cold","metric":"output_throughput","baseline_value":381.7,"treatment_value":570.6,"B_over_A":1.494891275871103,"operation":"ratio_gt","threshold":1.0,"passed":true},{"baseline":"A2","treatment":"B2","phase":"cold","metric":"c100","baseline_value":100.0,"treatment_value":100.0,"B_over_A":1.0,"operation":"value_ge","threshold":null,"passed":true},{"baseline":"A2","treatment":"B2","phase":"cold","metric":"failed_requests","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true},{"baseline":"A2","treatment":"B2","phase":"cold","metric":"max_token_hits","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true}],"B2_vs_A2/hot1":[{"baseline":"A2","treatment":"B2","phase":"hot1","metric":"output_throughput","baseline_value":643.7,"treatment_value":627.9,"B_over_A":0.9754544042255708,"operation":"ratio_ge","threshold":0.95,"passed":true},{"baseline":"A2","treatment":"B2","phase":"hot1","metric":"latency_p95_s","baseline_value":3.015,"treatment_value":2.984,"B_over_A":0.9897180762852404,"operation":"ratio_le","threshold":1.05,"passed":true},{"baseline":"A2","treatment":"B2","phase":"hot1","metric":"audio_ttfp_p95_s","baseline_value":0.5442,"treatment_value":0.5254,"B_over_A":0.9654538772510106,"operation":"ratio_le","threshold":1.05,"passed":true},{"baseline":"A2","treatment":"B2","phase":"hot1","metric":"c100","baseline_value":100.0,"treatment_value":100.0,"B_over_A":1.0,"operation":"value_ge","threshold":null,"passed":true},{"baseline":"A2","treatment":"B2","phase":"hot1","metric":"failed_requests","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true},{"baseline":"A2","treatment":"B2","phase":"hot1","metric":"max_token_hits","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true}],"B2_vs_A2/hot2":[{"baseline":"A2","treatment":"B2","phase":"hot2","metric":"output_throughput","baseline_value":617.6,"treatment_value":628.6,"B_over_A":1.0178108808290156,"operation":"ratio_ge","threshold":0.95,"passed":true},{"baseline":"A2","treatment":"B2","phase":"hot2","metric":"latency_p95_s","baseline_value":3.138,"treatment_value":3.322,"B_over_A":1.0586360739324412,"operation":"ratio_le","threshold":1.05,"passed":false},{"baseline":"A2","treatment":"B2","phase":"hot2","metric":"audio_ttfp_p95_s","baseline_value":0.4848,"treatment_value":0.5118,"B_over_A":1.0556930693069306,"operation":"ratio_le","threshold":1.05,"passed":false},{"baseline":"A2","treatment":"B2","phase":"hot2","metric":"c100","baseline_value":100.0,"treatment_value":100.0,"B_over_A":1.0,"operation":"value_ge","threshold":null,"passed":true},{"baseline":"A2","treatment":"B2","phase":"hot2","metric":"failed_requests","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true},{"baseline":"A2","treatment":"B2","phase":"hot2","metric":"max_token_hits","baseline_value":0,"treatment_value":0,"B_over_A":null,"operation":"value_le","threshold":null,"passed":true}]},"inference_scope":"Two paired server replicates only. Hot repeats are not independent replicates. Engineering guards are not statistical non-inferiority, a confidence interval, or a causal-effect estimate.","runtime_fix_scope":"Runtime stream-isolation fix addresses memory behavior; it is not evidence that hot latency is solved. Prior instrumented hot phases bypassed encoder leaders, used unchanged unseeded sampling and support only finite diagnostic conclusions. Fixed-stream long-run memory plateau cause remains unknown.","full_1088_quality":"NOT RUN"}
   }
+,
+  "full_corpus_validation": {
+    "date": "2026-10-22",
+    "artifact_label": "drama3-formal-full1088-final",
+    "scope": "Joint formal production full mixed-reference validation; reviewing evidence only, no readiness or merge verdict. Historical gates remain unchanged.",
+    "artifact_sha256": {
+      "plan.json": "6cf5d52fc4f6d43355e34991307c58a79410799afd1c4b5843816d926a700218",
+      "preflight.json": "a7d103dd0915e0989abc498dde6d229b03dad070dbe6db8e2130ecb49e032625",
+      "source-pins.json": "3a9ca14e9f632a75fcfe07aca4e96298ca5ad1290d4aadf1381498dadf0f441a",
+      "correctness-evidence-pins.json": "7cdf99c6c6dc40450f015be66b3869a43fde25833f209dd2e8fcf2047084a5b4",
+      "candidate-continuation-provenance.json": "ed177e4b186d2c07445bd37142db4dcbc3630ce99a0720f8b86d0ea9374cd90c",
+      "reference-isolated-full1088/source-manifest.json": "f23b2961c038a3f0d5a5d79bce6807290691951eda74376e80a50b97aae852c0",
+      "reference-isolated-full1088/input-manifest.json": "9046e8de0cfc96afb35e3b116fbf5d17e29001da0ed93163e371071cbd547362",
+      "reference-isolated-full1088/status.json": "535aab2fbe0043e1ab03ba5ff7baefdcc97e8133bdf29e9a0818dfd712decde7",
+      "quality-isolated-full1088/manifest.json": "6f61a1d1185142658df3aebcd51b219d33d161c5f5270f55325958da44e7fbaf",
+      "quality-isolated-full1088/status.json": "b3226af7f98209ae0f42c5d582d4841316c91ee9a7706882b38f215dd43b10e3",
+      "quality-isolated-full1088/post-verification.json": "a853c2d1cf743f2b1b2957194726ea10012a1a1bf0a05cd21fbd663224e6e1d6",
+      "quality-isolated-full1088/paired-quality-results.json": "9be4db81c4b332e4aebec30b4fa5fcb339afe315a43fb3276e9aae21c15a7a7a",
+      "quality-assets-provenance.json": "804d1a8b793520d6c46f4e7326b8940ebff5986ec0a359fd03fb060a33dbd68a"
+    },
+    "source_head": "34e42dc8cab8ecf026648dcd7b010d357bdd37ad",
+    "source_sha256": {
+      "sglang_omni/pipeline/runtime_config.py": "78e7a8bcc62a27e4f1113b2007c6e8d16e6ce34cafe3532779c7459062010b7f",
+      "sglang_omni/models/streaming_cascade/config.py": "40d76ee954dccf0060a416a89f6581134b4d606a0b67134bc74cf19e3590e9c9",
+      "sglang_omni/models/voxtral_tts/config.py": "fe567d3aed785a9c2f27e0e26425fac0f136d8ca3e7c69469e89e26171067f56",
+      "sglang_omni/models/voxtral_tts/model_config.py": "9aff6d14e8c8f29d3f8080b892677e7fbe0e75b629c03a85d95ff04340c55bb1",
+      "sglang_omni/models/voxtral_tts/pipeline/stages.py": "dfb1ba41f20527fb47099c1d1e419e4b63c9680939cadbfe2de6dda62f81cea9",
+      "sglang_omni/models/nemotron3_5_asr/stages.py": "0cd0ad7b04d30329fd9b6d4be52e6f91d70e523f555fe2ceb0e28eb92b7398e6",
+      "sglang_omni/models/nemotron3_5_asr/config.py": "958e86393a3b66af2295fa0e9203721efd92f8b6d808891a2fbff2532d29de86",
+      "sglang_omni/models/nemotron_voicechat/stages.py": "e980009f37d4274340dc57c6cd0b8ca0f70e7eb458f42b43cc954ec0b055a7a1",
+      "sglang_omni/models/nemotron_voicechat/duplex_stages.py": "bf55c5b059fa4f4c5b72360f5378a4f6f70299768112517582829c1b53447072",
+      "sglang_omni/models/nemotron_voicechat/hf_config.py": "cc77d7385382b6745b71e0f26e9e40239c18140f4a96217d9f55ce56286af430",
+      "sglang_omni/models/nemotron_voicechat/config.py": "3890a9d9f108e1d62677753431f4c1b574f560ab90c496f0561341401712a167",
+      "sglang_omni/models/nemotron_voicechat/duplex_config.py": "85bbe6d3dbe923601b9715e5f15ce3edd0ff1903e161e9ff32697a0cc3812d38",
+      "sglang_omni/models/zonos2/stages.py": "841b2ebddd60a21706caba21578811e183dc9a9754aedd16c0120e222b9484f8",
+      "sglang_omni/models/zonos2/hf_config.py": "21a3ba4ae35975580be64f00114095ccdbcb5b87daf09034543a1117c39a3586",
+      "sglang_omni/models/zonos2/config.py": "e1bd4bc8ce9beb525fe938a60d67fa250df084cb4389657bc474ecc6574b3312",
+      "sglang_omni/models/ming3_audio/stages.py": "07b74bb94a4e3c833f739b20fe1ab98cb85de87b5ef78cbd26608def39e00950",
+      "sglang_omni/models/ming3_audio/config.py": "88d8300375d559cf739051fa63677e919387fe76fd9bc6647a5c38a600ab72e7",
+      "sglang_omni/models/qwen3_omni/stages.py": "10e05845d492f0aad6e6bdb0d527c41d02ef4bcc783fff332c9e13d16a221ddb",
+      "sglang_omni/models/qwen3_omni/hf_config.py": "030c7d40f7739b89764759f5f906a62e686a8eeeb9ba8b99c07a7ec124634d13",
+      "sglang_omni/models/qwen3_omni/config.py": "494996745456ca30e3165d939e8af72455ed5352f717e8714e4162faaf0d5d86",
+      "sglang_omni/models/qwen3_omni/native_stages.py": "c43e8f64af8d28a0d1c22ee8f1aa3441a808d138961f68a8eca306d38a48e455",
+      "sglang_omni/models/fishaudio_s2_pro/stages.py": "da2163e48d848ecf32c251b687c44050e6cbd37acdc8a7c979b7c983d6fc5651",
+      "sglang_omni/models/fishaudio_s2_pro/config.py": "521cf19189ef723c353b7033911e27d8bf369802cfe1be169986b4f8cf6934ce",
+      "sglang_omni/models/cosmos3/config.py": "8a6f05e44afcc3afbf8fbcb38aaafa81ffbf3d815ff06c953f05df0cf9849252",
+      "sglang_omni/models/cosmos3/umm_config.py": "39737da2ae8ff00b51dad9b45b419b0a6b540339d17ac3b9dcb095c5d2742b86",
+      "sglang_omni/models/moss_transcribe_diarize/stages.py": "bdee43db82ed7f588482701d75842cbf1a0c6524f7caea3709297347635bcd56",
+      "sglang_omni/models/moss_transcribe_diarize/hf_config.py": "f51d7391db86dd13a565abc17292d9a31b44c8ba5f44b74e42294d331771a18d",
+      "sglang_omni/models/moss_transcribe_diarize/config.py": "604b7f8817385a090abefaa5d2f2d6435d885fb883d2e69b3d0b48f172fbdddd",
+      "sglang_omni/models/fun_cosyvoice3/stages.py": "8473241fe149b36ab316d6238ee918d2ad5ae5da792c5bcc0ec6aaf7dc14cddd",
+      "sglang_omni/models/fun_cosyvoice3/config.py": "640f8fef6008c247b5f596641f8215784fa7f1fabab89ffb4147c399045e6f33",
+      "sglang_omni/models/fun_asr/stages.py": "3a1995039e840323e3aa3c02c94a1e1de8d9859a3f94ea067f589a7c4e76ed02",
+      "sglang_omni/models/fun_asr/config.py": "ead540a9a9b4de2cb0ca64f293480d6316a178b1c28d7eb17238ad669d819408",
+      "sglang_omni/models/audar_tts/stages.py": "4cadaa62d2692af4a337054f814c5788802d854b738ee518909c940769822b09",
+      "sglang_omni/models/audar_tts/config.py": "0824bb129c6a951d8e1138be5a33e68f0c713b9408c91136ddae93c2903f75bf",
+      "sglang_omni/models/minimax_music3/stages.py": "0c946124eebd527faa7553ce155a2c5896e5fbc577c626b078c7bf7533927915",
+      "sglang_omni/models/minimax_music3/config.py": "e5d4bac0a4f4f0804186f1cd33e203748d7a2d261470f23046e1bd5ee7e18317",
+      "sglang_omni/models/moss_tts_local/stages.py": "6e82e4412841a88cef6627335e2f953ec8f96e00a5a43d5094fef610dbb5f79f",
+      "sglang_omni/models/moss_tts_local/config.py": "d127f7c783a0d3a59fad6c163d9461e076e50d33b2d223f204deebe9513e6c14",
+      "sglang_omni/models/ming3_asr/stages.py": "065f452953107a7455901d735971572cf2fe42c8e7a67a2387501bfa357a2087",
+      "sglang_omni/models/ming3_asr/config.py": "f42c9bcd43a1b1ebbc5c18e63aa5a6240173130b63bce51920e9266bde2de669",
+      "sglang_omni/models/qwen3_tts/stages.py": "4e2b89ff421848197b68fcb7740973001f0cf13fd2dcb6b912a86ae529fd6c83",
+      "sglang_omni/models/qwen3_tts/config.py": "e95da51254df01a3bad12ff9c879348d3a735363dcaad33513ce48a9d7250d31",
+      "sglang_omni/models/ming_tts/stages.py": "801765dd31aa7a11cac796a4151d01092677968631a9d75859b7d4dfbc0942a2",
+      "sglang_omni/models/ming_tts/hf_config.py": "5bbf0d667e67f2d282425f4436538181a6d1d155acd071f81d95ccc9d4e2acd7",
+      "sglang_omni/models/ming_tts/config.py": "96d581a345aa06fd983c5c673b97d5ac9e79da4d301b84cfb8966fce2365211c",
+      "sglang_omni/models/ming_tts/reference_encode.py": "e041ca81bc32249edb7c274620855b4611004ab5800fa513e37cdeb30929a54e",
+      "sglang_omni/models/ming_tts/audio_config.py": "f7d8153860e67e7aeef431786abd29bf26acb5bbf32c003f8c82bc48941b0bcb",
+      "sglang_omni/models/whisper_asr/stages.py": "2b3e85f5ca890ea152458346c6e0d4ee002b490c8910c797990ddb5f9b7508ca",
+      "sglang_omni/models/whisper_asr/config.py": "bbf8d7adfac850c1281e7d7466a554d7d5151424d3383cfa637fc814f917b603",
+      "sglang_omni/models/qwen3_asr/stages.py": "5b02ffb629f303782e709c896ff3f7cff3867a8019b70de0179d20c4d5a87c07",
+      "sglang_omni/models/qwen3_asr/config.py": "ab1de4529a1c7893a56d6932f476701e0e1762c39e9ca22d6b07f29d7d939729",
+      "sglang_omni/models/moss_tts/reference_encoder.py": "ba12f9c499beac66587384fc9efc7bea8d06ae50465d6e8dfe4cd71308e26b7a",
+      "sglang_omni/models/moss_tts/stages.py": "f72ea8ea6795b667fa5ed713ba4faac5b1294e1151197e6fde498c74474bf063",
+      "sglang_omni/models/moss_tts/config.py": "3f392aa6c03389f425f0f82230e73563c4784d1af6d44ee4d030511de6f6be66",
+      "sglang_omni/models/dots_tts/stages.py": "0244a0b961271aebb5f4713357f5550c3b68d5d2c8aec9fb69ccbf3614b56f5a",
+      "sglang_omni/models/dots_tts/hf_config.py": "606c1dcf8000ac333eef08c0af45b0e2878fed0a4d2edda20d80b2cb0bf49c55",
+      "sglang_omni/models/dots_tts/config.py": "4f745de1cedeb2a6a3c41f9d98c3cef1ec1738c5dfa6f2e2a394a78c25569a77",
+      "sglang_omni/models/arkasr/stages.py": "26cf6cd1294ff1443999fca3eccb5dc61dc2f88a58f7858939f6f3810a8091aa",
+      "sglang_omni/models/arkasr/config.py": "4f11416cc4cb2cd180bc7f0ca26aa604060d470b33f84198bfb7d432ac314b3e",
+      "sglang_omni/models/fishaudio_drama3/stages.py": "1fb8678a6d4beac56fb77c1ce0dfb8abfb3697428e917295e2f298566b4bf888",
+      "sglang_omni/models/fishaudio_drama3/hf_config.py": "cf0eacb3b09be7f221acdda8348552b0c7a9c51a8245bfc012624b446695b2b4",
+      "sglang_omni/models/fishaudio_drama3/config.py": "29bbdbc9256be563943c7f359d3b6604f9a1d990bfe8949f1aab5b41cce7eca1",
+      "sglang_omni/models/fishaudio_drama3/reference_encode.py": "3d4892959da871023348603b13ee1df29138efe2b41b02257a0270e542094d14",
+      "sglang_omni/models/fishaudio_drama3/text_config.py": "da0c0128caf05167e3807e0fbbd0c986f02aad7c3a8ceb99dba4af3084e0c2ba",
+      "sglang_omni/models/nemotron_diarization/stages.py": "8741e7614903fd2ef41e7ffa7470477f4de5d7efc33026b735a10096ecdafa9c",
+      "sglang_omni/models/nemotron_diarization/config.py": "f9530079b41eca6b2097da229de9a96954d1ab30971cc4f4408dab64206bad13",
+      "sglang_omni/models/higgs_tts/stages.py": "8b5b4cbea9c19fb177cf5a2ce9ee0ce5c3fd8003fdf08a630d2dbba3dea758f8",
+      "sglang_omni/models/higgs_tts/hf_config.py": "7e0e901d69c789225ef6c0a78676ae6125957d682f1cf0eeac1dc16ec983d14e",
+      "sglang_omni/models/higgs_tts/config.py": "3884e717a866fc8a087c11417b5a1460b8e31b0d0f9616087887049fbce2ae0e",
+      "sglang_omni/models/personaplex/stages.py": "79b567a79416a3da2d340fd037eb6fb334cb04415e0a35b5c2514cf12a50f8f3",
+      "sglang_omni/models/personaplex/hf_config.py": "9373e092e56b37619ac8b951c6bd674ea48007896ad3b65bbaa3d20a231b738d",
+      "sglang_omni/models/personaplex/config.py": "23480cb1daf32623dfe1d4fed32aa6da62d8df984d014f25d1e233a92dbc214c",
+      "sglang_omni/models/ming_omni/stages.py": "d9d1e9b5490c8b3ede9dcef0d5c848ade88202864eb82b94e889aa7a55c914bb",
+      "sglang_omni/models/ming_omni/hf_config.py": "634a413b2e400731a09300e535484a5b6dc2cbc38edc2b4d2b29e5a28d5cfb49",
+      "sglang_omni/models/ming_omni/config.py": "a63135ff91e8f51290d7964cb1db65383fa1ed09d67ad91205bc903e06508495",
+      "sglang_omni/models/minicpm_o/stages.py": "1d9428faaf38cd1c7cae5e0c5cb1a18ac4bfb3c4fcfd7973a904b88210408077",
+      "sglang_omni/models/minicpm_o/hf_config.py": "94714b16f915671ecd12d13c8dac76b25693f6f3d147d9f0b6156c6ad80268bd",
+      "sglang_omni/models/minicpm_o/config.py": "62ae823c5bbc4965613b620d73fd2614c5067d9f008e72e4a53782efe192b950",
+      "sglang_omni/models/minicpm_o/native_config.py": "d924b8db937907581b6a75ebe3acc2636db4f2679870922300316e8c7085f46b",
+      "sglang_omni/models/minicpm_o/native_stages.py": "6bdf109dadace6d6b2ac33b52dd0bbf6093144d25e18ca0ff4f666be64c2f370",
+      "sglang_omni/models/ming3_tts/stages.py": "731585a40f09b92bc4dc5ce150a2b584fb47e26904c680c83652964a2845b8a2",
+      "sglang_omni/models/ming3_tts/config.py": "979968a84dd93bb53d2025289ff678d56a3e64aa879ebe3a728176f89ff3a4cd",
+      "sglang_omni/models/auk/stages.py": "b769521d382afef8c875e45ace64873441411baa58b30fb653afa08f6824d572",
+      "sglang_omni/models/auk/hf_config.py": "debea5af47005abe49d2dc6f1d1eddc1b41feac1f15ecfd0a69ee7104bbbd4f2",
+      "sglang_omni/models/auk/config.py": "e7dfd03393721af024530e94eec2e067bb2a55522fcdbe5d73d581cacb50a3ac",
+      "sglang_omni/models/auk/reference_encode.py": "363589918290768278fc2bd465fdcf13ec75eaba9b5a0fa1bbe2e546e1daab4d",
+      "sglang_omni/models/llada2_uni/stages.py": "043cea1fd231f71dc02695754cd33040ce2a2d5e2892a18c4f1ff9c5f5ff4d9b",
+      "sglang_omni/models/llada2_uni/config.py": "4c7e5233058c546d77fea94a675612958f8846d8d6c9393392c0a2639b1d0d84",
+      "sglang_omni/scheduling/reference_encoder.py": "559beecee0ec61a360f531d2f02148bff8a93b1de4c5cf1f13df820e00f4c2c4",
+      "sglang_omni/modules/ming_audio/hf_config.py": "267d8a85a664d827c6b3de74e4a9f3cfcd1fd5f8a9666d8710a0203abe05833f",
+      "sglang_omni/cli/config.py": "fa75dc6126c576af3c13545f7f8833d6c390a4de0ccadf5603c784a6fdcc7596",
+      "benchmarks/benchmarker/data.py": "3fceeedd375660120cb0479f6c9340b036e67720b2a7df50d42bb81866d014e8",
+      "benchmarks/metrics/performance.py": "28d277ec5edfded53fa1e106edc95b159ded8a93bbc0042975b616916737afdc",
+      "benchmarks/tasks/tts.py": "b2a3543569b9b95c30ff44f4bfb965ed3c1b03afd495c88b8107a07e04486752"
+    },
+    "protocol": {
+      "factory_streams": {
+        "A": 0,
+        "B": 2
+      },
+      "fresh_servers": 2,
+      "discarded_warmup_requests_per_arm": 32,
+      "warmup_distinct_references": 20,
+      "warmup_reference_overlap": 20,
+      "full_distinct_content_references": 666,
+      "regime": "full mixed-reference; neither pure cold nor pure hot",
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.9,
+        "top_k": null,
+        "seed": null,
+        "max_new_tokens": 500
+      },
+      "concurrency": 16,
+      "generation_budget_seconds": 5400,
+      "instrumentation": "No CUDA event, Torch profiler, Pyspy or sitecustomize hooks",
+      "continuation": "External verifier null-underrun TypeError after A; corrected validator retained original A and original failed status; sole B boot within original 90-minute budget, no A rerun."
+    },
+    "cells": {
+      "A": {
+        "completion_valid": true,
+        "all_requests_succeeded": false,
+        "total_requests": 1088,
+        "successful_audio_expected": 1087,
+        "failed_request_ids": [
+          "common_voice_en_21499767-common_voice_en_21499784"
+        ],
+        "summary": {
+          "total_requests": 1088,
+          "completed_requests": 1087,
+          "failed_requests": 1,
+          "max_token_hits": 0,
+          "finish_reason_observed": 1087,
+          "client_slot_waits": 1072,
+          "latency_mean_s": 2.358,
+          "latency_median_s": 2.285,
+          "latency_p95_s": 3.532,
+          "latency_p99_s": 4.193,
+          "audio_duration_mean_s": 4.202,
+          "rtf_mean": 0.5732,
+          "rtf_median": 0.56,
+          "rtf_p95": 0.7203,
+          "rtf_p99": 0.8338,
+          "throughput_qps": 6.76,
+          "output_throughput": 611.6,
+          "output_tokens_mean": 90.0,
+          "output_tokens_total": 98350,
+          "prompt_tokens_mean": 170.0,
+          "prompt_tokens_total": 184805,
+          "audio_throughput_s_per_s": 28.405,
+          "audio_ttfp_mean_s": 0.5698,
+          "audio_ttfp_median_s": 0.534,
+          "audio_ttfp_p95_s": 0.9798,
+          "audio_ttfp_p99_s": 1.2707,
+          "inter_chunk_mean_s": 0.4568,
+          "inter_chunk_p95_s": 1.1389,
+          "inter_chunk_p99_s": 1.4623,
+          "audio_chunks_mean": 4.91,
+          "audio_chunks_p95": 6.0,
+          "first_audio_payload_bytes_mean": 40960.0,
+          "first_audio_payload_bytes_p95": 40960.0,
+          "playback_continuity_requests": 1087,
+          "playback_continuity_na_requests": 0,
+          "max_playback_underrun_mean_s": 0.0001,
+          "max_playback_underrun_p95_s": 0.0,
+          "max_playback_underrun_p99_s": 0.0,
+          "c50": 100.0,
+          "c100": 100.0,
+          "c200": 100.0
+        },
+        "capped_ids": [],
+        "underruns": [
+          {
+            "id": "common_voice_en_20806032-common_voice_en_20806033",
+            "seconds": 0.0476
+          },
+          {
+            "id": "common_voice_en_20905661-common_voice_en_20905660",
+            "seconds": 0.022
+          },
+          {
+            "id": "common_voice_en_20907200-common_voice_en_20907217",
+            "seconds": 0.0307
+          },
+          {
+            "id": "common_voice_en_493740-common_voice_en_493738",
+            "seconds": 0.003
+          },
+          {
+            "id": "common_voice_en_497961-common_voice_en_497960",
+            "seconds": 0.0026
+          },
+          {
+            "id": "common_voice_en_502839-common_voice_en_502843",
+            "seconds": 0.0085
+          }
+        ],
+        "finish_reasons": {
+          "stop": 1087,
+          "unknown": 1
+        },
+        "cleanup": {
+          "returncode": 0,
+          "forced": false,
+          "group_gone": true,
+          "resource_sampler_stopped": true,
+          "instant_group_gone": true,
+          "descendants_gone": true,
+          "remaining_process_ids": [],
+          "drain_seconds": 0.0005201594904065132
+        }
+      },
+      "B": {
+        "completion_valid": true,
+        "all_requests_succeeded": false,
+        "total_requests": 1088,
+        "successful_audio_expected": 1087,
+        "failed_request_ids": [
+          "common_voice_en_588627-common_voice_en_588628"
+        ],
+        "summary": {
+          "total_requests": 1088,
+          "completed_requests": 1087,
+          "failed_requests": 1,
+          "max_token_hits": 1,
+          "finish_reason_observed": 1087,
+          "client_slot_waits": 1072,
+          "latency_mean_s": 2.175,
+          "latency_median_s": 2.081,
+          "latency_p95_s": 3.338,
+          "latency_p99_s": 4.008,
+          "audio_duration_mean_s": 4.218,
+          "rtf_mean": 0.5226,
+          "rtf_median": 0.5273,
+          "rtf_p95": 0.6351,
+          "rtf_p99": 0.683,
+          "throughput_qps": 7.332,
+          "output_throughput": 666.0,
+          "output_tokens_mean": 91.0,
+          "output_tokens_total": 98736,
+          "prompt_tokens_mean": 170.0,
+          "prompt_tokens_total": 184858,
+          "audio_throughput_s_per_s": 30.928,
+          "audio_ttfp_mean_s": 0.3851,
+          "audio_ttfp_median_s": 0.3559,
+          "audio_ttfp_p95_s": 0.6232,
+          "audio_ttfp_p99_s": 0.7568,
+          "inter_chunk_mean_s": 0.4562,
+          "inter_chunk_p95_s": 1.1295,
+          "inter_chunk_p99_s": 1.4933,
+          "audio_chunks_mean": 4.92,
+          "audio_chunks_p95": 6.0,
+          "first_audio_payload_bytes_mean": 40960.0,
+          "first_audio_payload_bytes_p95": 40960.0,
+          "playback_continuity_requests": 1087,
+          "playback_continuity_na_requests": 0,
+          "max_playback_underrun_mean_s": 0.0002,
+          "max_playback_underrun_p95_s": 0.0,
+          "max_playback_underrun_p99_s": 0.0012,
+          "c50": 99.91,
+          "c100": 100.0,
+          "c200": 100.0
+        },
+        "capped_ids": [
+          "common_voice_en_30735432-common_voice_en_30735433"
+        ],
+        "underruns": [
+          {
+            "id": "common_voice_en_17874600-common_voice_en_17874602",
+            "seconds": 0.0226
+          },
+          {
+            "id": "common_voice_en_19793104-common_voice_en_19793103",
+            "seconds": 0.0174
+          },
+          {
+            "id": "common_voice_en_19816147-common_voice_en_19816166",
+            "seconds": 0.015
+          },
+          {
+            "id": "common_voice_en_19933238-common_voice_en_19933256",
+            "seconds": 0.0439
+          },
+          {
+            "id": "common_voice_en_19933652-common_voice_en_19933655",
+            "seconds": 0.0165
+          },
+          {
+            "id": "common_voice_en_19933652-common_voice_en_19933661",
+            "seconds": 0.0303
+          },
+          {
+            "id": "common_voice_en_19934187-common_voice_en_19934317",
+            "seconds": 0.0205
+          },
+          {
+            "id": "common_voice_en_19944630-common_voice_en_19944631",
+            "seconds": 0.0301
+          },
+          {
+            "id": "common_voice_en_487077-common_voice_en_487076",
+            "seconds": 0.0072
+          },
+          {
+            "id": "common_voice_en_557458-common_voice_en_557459",
+            "seconds": 0.0053
+          },
+          {
+            "id": "common_voice_en_591530-common_voice_en_591529",
+            "seconds": 0.0605
+          },
+          {
+            "id": "common_voice_en_593372-common_voice_en_593374",
+            "seconds": 0.0005
+          }
+        ],
+        "finish_reasons": {
+          "stop": 1086,
+          "length": 1,
+          "unknown": 1
+        },
+        "cleanup": {
+          "returncode": 0,
+          "forced": false,
+          "group_gone": true,
+          "resource_sampler_stopped": true,
+          "instant_group_gone": true,
+          "descendants_gone": true,
+          "remaining_process_ids": [],
+          "drain_seconds": 0.0005764160305261612
+        }
+      }
+    },
+    "quality": {
+      "successful_eligible_per_arm": 1087,
+      "paired_count": 1086,
+      "expected_per_arm": 1088,
+      "statistics": {
+        "seed": 20261021,
+        "replicates": 10000,
+        "interval": "paired percentile 95%",
+        "comparisons": [
+          "B-A full"
+        ],
+        "unit": "same sample ID within campaign/regime; no independent pooling of repeated audio",
+        "noninferiority_margin": null
+      },
+      "aggregates": {
+        "A-full": {
+          "wer": {
+            "evaluated": 1087,
+            "estimate": 0.013157894736842105,
+            "ci95": [
+              0.010862406729553992,
+              0.015631531430668266
+            ],
+            "total_edits": 157,
+            "total_reference_words": 11932
+          },
+          "sim": {
+            "evaluated": 1087,
+            "estimate": 64.18089804522138,
+            "ci95": [
+              63.612853791150016,
+              64.7413317007435
+            ]
+          },
+          "utmos": {
+            "evaluated": 1087,
+            "estimate": 3.9879758969641212,
+            "ci95": [
+              3.963844981600736,
+              4.01167762649494
+            ]
+          }
+        },
+        "B-full": {
+          "wer": {
+            "evaluated": 1087,
+            "estimate": 0.013992459153749477,
+            "ci95": [
+              0.011212190145154833,
+              0.01727023618262604
+            ],
+            "total_edits": 167,
+            "total_reference_words": 11935
+          },
+          "sim": {
+            "evaluated": 1087,
+            "estimate": 64.12694992268973,
+            "ci95": [
+              63.55437973394456,
+              64.70016917581391
+            ]
+          },
+          "utmos": {
+            "evaluated": 1087,
+            "estimate": 3.9886682612695488,
+            "ci95": [
+              3.9654319135234584,
+              4.011622194112235
+            ]
+          }
+        }
+      },
+      "paired": {
+        "B-A-full": {
+          "wer": {
+            "paired_count": 1086,
+            "expected": 1088,
+            "excluded_due_to_failure_ids": [
+              "common_voice_en_21499767-common_voice_en_21499784",
+              "common_voice_en_588627-common_voice_en_588628"
+            ],
+            "direction": "B-A; lower better for WER, higher better for SIM/UTMOS",
+            "arm_a": 0.013166722576316672,
+            "arm_b": 0.014005367326400536,
+            "difference": 0.0008386447500838643,
+            "ci95": [
+              -0.0018436269169529885,
+              0.0039732676966225495
+            ],
+            "complete_cohort": false
+          },
+          "sim": {
+            "paired_count": 1086,
+            "expected": 1088,
+            "excluded_due_to_failure_ids": [
+              "common_voice_en_21499767-common_voice_en_21499784",
+              "common_voice_en_588627-common_voice_en_588628"
+            ],
+            "direction": "B-A; lower better for WER, higher better for SIM/UTMOS",
+            "arm_a": 64.18328164910304,
+            "arm_b": 64.1256441832906,
+            "difference": -0.057637465812433675,
+            "ci95": [
+              -0.4982134872598184,
+              0.38706996432106366
+            ],
+            "complete_cohort": false
+          },
+          "utmos": {
+            "paired_count": 1086,
+            "expected": 1088,
+            "excluded_due_to_failure_ids": [
+              "common_voice_en_21499767-common_voice_en_21499784",
+              "common_voice_en_588627-common_voice_en_588628"
+            ],
+            "direction": "B-A; lower better for WER, higher better for SIM/UTMOS",
+            "arm_a": 3.989133241252302,
+            "arm_b": 3.988672283609576,
+            "difference": -0.0004609576427259121,
+            "ci95": [
+              -0.017019436003683285,
+              0.01571954189686986
+            ],
+            "complete_cohort": false
+          }
+        }
+      },
+      "scoring_exit_codes": {
+        "A-full": {
+          "wer": 0,
+          "sim": 0,
+          "utmos": 0
+        },
+        "B-full": {
+          "wer": 0,
+          "sim": 0,
+          "utmos": 0
+        }
+      },
+      "scorer_source_sha256": {
+        "benchmarks/eval/benchmark_tts_seedtts.py": "241d18076b98fee531efe3c6ddbc3b8f3fb03eadc74f5f3f8aa3a08695cd45b9",
+        "benchmarks/tasks/tts.py": "b2a3543569b9b95c30ff44f4bfb965ed3c1b03afd495c88b8107a07e04486752",
+        "benchmarks/tasks/asr.py": "0671382fb41ca053ebdc759b527065a3fa4b06ba6929ef3e8f1b2d5652cb7197",
+        "benchmarks/metrics/speaker_similarity.py": "18528106c718384e6e096b79031c78fbc90890344d80ba6ae3d4cbadc0d2545e",
+        "benchmarks/metrics/speaker_similarity_assets.py": "dead3767bf3346f1f8c10071b183b255fbe0c4b7b7bb4de6a2e584cd8f57c6bb",
+        "benchmarks/metrics/utmos.py": "8cbd6d36f0b83c9e58092348a029b75b0c5d62060003faea49bb0ae2e795af9a",
+        "benchmarks/benchmarker/utils.py": "3dd1b7889942c4bc5b24439bde64e213c6a926a9c0c6ff33d60a7fe701562ed5"
+      },
+      "asr_revision": "7278e1e70fe206f11671096ffdd38061171dd6e5",
+      "selected_sha256": "7cd29f701743e6c7033edbca764ddc0b979de8c4f4907eff5e5454682114661f",
+      "post_verification": {
+        "metadata_unchanged": true,
+        "wav_records_checked": 2174,
+        "source_hashes_unchanged": true,
+        "all_wavs_unchanged": true,
+        "reference_wavs_unchanged": true,
+        "gpu_after": ""
+      },
+      "retained_cap": {
+        "id": "common_voice_en_30735432-common_voice_en_30735433",
+        "quality_by_cell": {
+          "A-full": {
+            "wer": [
+              0.0,
+              12.0
+            ],
+            "sim": [
+              59.199153900146484
+            ],
+            "utmos": [
+              3.5388
+            ]
+          },
+          "B-full": {
+            "wer": [
+              12.0,
+              12.0
+            ],
+            "sim": [
+              26.87632179260254
+            ],
+            "utmos": [
+              1.362
+            ]
+          }
+        }
+      },
+      "interpretation": "Exclude generation FAIL only, retain caps and all high-WER outputs. WER estimates and paired WER delta/CI use ratios, multiply by 100 for percent/percentage points. No predeclared NI margin; zero-spanning intervals are not NI; no complete-1088 quality pass or unchanged-frequency claim."
+    },
+    "verification": {
+      "recorded_core_cpu_passed": 198,
+      "recorded_benchmark_cpu_passed": 88,
+      "recorded_scoped_hooks": "passed",
+      "independent_review": "P2 first-fragment epoch timestamp correction; reviewing, no verified blocker yet; no merge verdict",
+      "prior_full_precommit": "Python/style passed; Rust cargo missing, exit 127; not a full pass",
+      "documentation_update_gpu_work": false
+    },
+    "performance_change_percent": {
+      "output_throughput": 8.894702419882261,
+      "latency_p95_s": -5.492638731596832,
+      "audio_ttfp_p95_s": -36.395182690344974,
+      "rtf_p95": -11.828404831320293
+    }
+  }
 }

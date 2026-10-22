@@ -450,6 +450,10 @@ def _request_result_to_dict(output: RequestResult) -> dict:
         "prompt_tokens": output.prompt_tokens or None,
         "completion_tokens": output.completion_tokens or None,
         "finish_reason": output.finish_reason.value,
+        "speech_outcome_id": output.speech_outcome_id or None,
+        "client_send_start_epoch_nanoseconds": output.client_send_start_epoch_nanoseconds,
+        "client_first_nonempty_pcm_epoch_nanoseconds": output.client_first_nonempty_pcm_epoch_nanoseconds,
+        "client_end_epoch_nanoseconds": output.client_end_epoch_nanoseconds,
         "output_token_rate": (
             round(output.tok_per_s, 1) if output.tok_per_s > 0 else None
         ),

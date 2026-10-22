@@ -107,3 +107,65 @@ Cold throughput improves 329.8→540.5 and 381.7→570.6 frames/s. Hot throughpu
 The three failures are B1 cold cap count **1 versus A1's 0**, B2/A2 hot2 E2E p95 **3.322/3.138 s (+5.8636%)**, and hot2 TTFA p95 **0.5118/0.4848 s (+5.5693%)**; both latency limits are +5%. B1 cold capped ID is `common_voice_en_17263752-common_voice_en_17263750` (63 `stop`, one `length`). Postfix nonzero underruns are A1 hot1 `common_voice_en_17444666-common_voice_en_17444667` (0.0682 s), and A1 hot2 that same ID (0.1641 s), `common_voice_en_17784-common_voice_en_17785` (0.0635 s), and `common_voice_en_177895-common_voice_en_177894` (0.0634 s). No cap or underrun is filtered, retried away, or substituted for the historical records above.
 
 Only two independent server pairs exist; hot1/hot2 repeats are not independent server replicates. Frozen engineering thresholds are not statistical non-inferiority, confidence intervals or causal-effect estimates. Improved throughput in some new cells does not erase the original failed hot/continuity gate or solve the remaining postfix failures. No additional GPU work, runtime edits, quality evaluation or merge approval is implied.
+
+## Full formal 1,088-request joint validation (2026-10-22)
+
+This is a later, explicitly authorized **formal production-factory** campaign, artifact label `drama3-formal-full1088-final`, not a substitution of historical temporary-hook results. The original failed small gate and all three postfix failures above remain unchanged historical evidence; their “NOT RUN” statements describe those earlier stopping points. This section records the subsequently executed full campaign, not a readiness or merge verdict. Review is ongoing, with no verified blocker yet reported; default `reference_encode_cuda_streams=0` is unchanged.
+
+### Protocol, integrity and retained verifier failure
+
+The actual generation metadata, `source-pins.json`, `correctness-evidence-pins.json`, `reference-isolated-full1088/source-manifest.json`, input manifest, per-arm verification and cleanup records, and quality manifest/status/post-verification form the evidence chain. The adjacent JSON adds only `full_corpus_validation`, with compact hashes, source pins, metrics, failure/cap IDs and every nonzero underrun; no audio or giant per-request arrays are copied. Generation source HEAD is `34e42dc8cab8ecf026648dcd7b010d357bdd37ad`. The source manifest pins the English corpus revision `27f4c1adee83b5b29b7c4b375f6b976324bda308`; model and codec revisions are the same as the original protocol above. Pins distinguish executed artifacts from later local benchmark corrections.
+
+One fresh A factory-0 service and one fresh B factory-2 service use the formal option, GPU split and concurrency/capacity 16 described above. There are **no CUDA-event, Torch-profiler, Pyspy or sitecustomize hooks**. Each arm discards 32 warmup requests and then attempts all 1,088 IDs once. Warmup has 20 distinct content references, all overlapping the full cohort, which has **666 distinct content references**. This is **full mixed-reference**, neither pure cold nor pure hot; the full pass includes first uses, repeats and warmed references. Sampling remains temperature 1.0, top-p 0.9, cap 500, without fixed seed/top-k. Pairing by sample ID is not common-RNG or identical generated work.
+
+A produced 1,087 audio outputs and one HTTP 500/no-audio failure before the external verifier aborted on a null underrun (`None > 0`). `status.baseline-validator-failed.json` preserves that failure. The corrected verifier treats failed rows explicitly, validates successful audio, and does not reinterpret completion validity as all-request success. Original A metadata/audio were retained without rerun or rescue; the **sole B continuation** used the original 90-minute generation deadline, not a reset budget. Both arms remain `all_requests_succeeded=false`.
+
+### Actual full-corpus performance and adverse outcomes
+
+| Arm | Attempted / audio successes / HTTP errors / caps | Frames/s | E2E p95 (s) | TTFA p95 (s) | RTF p95 | C50 (%) | C100 (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| A, factory 0 | 1,088 / 1,087 / 1 / 0 | 611.6 | 3.532 | 0.9798 | 0.7203 | 100 | 100 |
+| B, factory 2 | 1,088 / 1,087 / 1 / 1 | 666.0 | 3.338 | 0.6232 | 0.6351 | 99.91 | 100 |
+
+B/A output throughput improves **8.895%**, E2E p95 changes **−5.4926%**, and TTFA p95 **−36.3952%**. These new full mixed-reference performance observations are within the 5% adverse latency/throughput guards. They do not make every guard pass: B has one cap versus A's zero and lower C50. Continuity denominators are the 1,087 successful audio outputs per arm, not all attempted IDs. Output frame totals differ, 98,350 versus 98,736. This is one sequential server pair, not reverse-order replication or formal hot-path non-inferiority; the earlier incremental-hot uncertainty cannot be erased by a mixed-reference aggregate.
+
+- A HTTP/no-audio failure: `common_voice_en_21499767-common_voice_en_21499784`.
+- B HTTP/no-audio failure: `common_voice_en_588627-common_voice_en_588628`.
+- B cap: `common_voice_en_30735432-common_voice_en_30735433`, `length`, 500 tokens, 23.22 seconds of audio. A has 1,087 `stop` outcomes plus one `unknown`; B has 1,086 `stop`, one `length` and one `unknown`.
+- B's only underrun above 50 ms is `common_voice_en_591530-common_voice_en_591529`, **60.5 ms**. All six A and twelve B nonzero underruns, including smaller ones, remain in the compact JSON, not filtered out.
+
+Both generation servers exited 0 without forced shutdown; groups, descendants and samplers were gone. Recorded post-scoring GPU process verification is empty, with all GPUs reported clean. This update ran no GPU work.
+
+### Actual quality scoring and paired uncertainty
+
+Quality evidence is `quality-isolated-full1088/paired-quality-results.json`, with `status.json`, `post-verification.json` and scorer/source/checkpoint pins in the manifest and asset provenance. All six WER/SIM/UTMOS scoring jobs exited **0**. Post-verification checked **2,174 generated audio records** and confirms unchanged metadata, generated audio, reference audio and source hashes. The ASR scorer revision is `7278e1e70fe206f11671096ffdd38061171dd6e5`; checkpoint provenance and safe-load audit are retained, not inferred from exit status alone. Scoring jobs completed successfully, but generation failure prevents a complete-1,088 quality-pass claim.
+
+Only generation **FAIL** outputs are ineligible: each metric evaluates **1,087 A and 1,087 B** outputs. Paired comparison uses **1,086 IDs**, excluding exactly the two different failure IDs listed above. No cap, WER>50% output, poor SIM or low UTMOS is excluded for convenience.
+
+| Eligible-arm aggregate | A (1,087) | B (1,087) | B−A |
+|---|---:|---:|---:|
+| Corpus WER (%) | 1.315789 | 1.399246 | +0.083456 percentage points (worse) |
+| SIM (scorer units) | 64.180898 | 64.126950 | −0.053948 |
+| UTMOS | 3.987976 | 3.988668 | +0.000692 |
+
+Corpus WER is summed edits / summed reference words: A **157/11,932**, B **167/11,935**, not an unweighted mean of per-utterance percentages. The paired estimates below use the common 1,086-ID subset, so their deltas differ from the eligible-arm aggregate deltas above. The actual paired bootstrap uses 10,000 replicates, seed 20261021, percentile 95% intervals.
+
+| Paired B−A estimate | Difference | 95% paired interval |
+|---|---:|---:|
+| WER (percentage points) | +0.083864475 | [−0.184362692, +0.397326770] |
+| SIM (scorer units) | −0.057637466 | [−0.498213487, +0.387069964] |
+| UTMOS | −0.000460958 | [−0.017019436, +0.015719542] |
+
+The source JSON stores paired WER delta **0.0008386447500838643 as a ratio**, with interval [−0.0018436269169529885, +0.0039732676966225495]; multiplying by 100 gives the percentage-point table. **No non-inferiority margin was predeclared. Intervals crossing zero are not proof of non-inferiority.** Neither unchanged failure/cap frequency nor a complete-1,088 quality pass is established.
+
+The B capped ID remains scored despite its **WER 100%, SIM 26.876322, UTMOS 1.362**; the same ID's A scores are WER 0%, SIM 59.199154 and UTMOS 3.5388. The A 100%-WER ID `common_voice_en_21538043-common_voice_en_21538044` is also retained. The user-approved scope excludes the confirmed baseline 1+15/EOS shared mechanism from this optimization's blocker accounting, but does not delete those outcomes or prove that the candidate leaves their frequency unchanged. Shared-mechanism diagnosis cannot settle incremental hot-path uncertainty.
+
+### CPU verification and benchmark correlation boundary
+
+Recorded verification supplied for the combined work is **198 core CPU tests** and **88 benchmark CPU tests** passing, scoped hooks passing, and independent review of the P2 first-fragment timestamp correction. These are recorded results, not rerun GPU/component evidence for this documentation update. The prior whole pre-commit attempt failed Rust formatting because `cargo` was missing (exit 127), despite passing Python/style checks; it was not a complete pre-commit pass. Quality scoring exit-0 evidence is separate from repository CI/tooling status.
+
+The current local benchmark-only correlation fix adds typed optional epoch-nanosecond fields for client send start, first nonempty PCM and request end, plus the server speech outcome ID in saved rows (including HTTP-error responses). First-PCM epoch time follows the **first nonempty fragment**, not delayed HTTP-chunk assembly. Focused tests cover empty markers, fragmented chunks/end-of-stream buffering, JSON persistence, error/no-audio cases and unchanged monotonic timing/continuity behavior. These fields enable joining client and server evidence; E2E/TTFA still use the existing monotonic clock, with **no metric-semantic change**. Do not confuse the later reviewed correction with the pinned implementation used during generation.
+
+The joint evidence therefore consists of finite reference-code correctness, bounded allocator/lifecycle results, improved full mixed-reference service metrics, retained adverse outcomes and descriptive quality uncertainty. It does not overwrite the failed small/postfix guards, establish formal hot or quality non-inferiority, authorize production/default changes, or supply a ready/merge verdict. The main reviewer owns final status.
+
+Documentation sanity check: the current whole-repository pre-commit run again passed Python/style and other available hooks, but Rust formatting failed with missing `cargo` (exit 127); the whole run did not pass. The coordinator reports prior Rust quality CI passes separately. Final independent review reports no verified PR-new-code blocker; this does not change the non-inferiority limits or grant merge approval. Publication and any review-status transition remain the main reviewer’s responsibility.

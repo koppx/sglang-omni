@@ -9,9 +9,10 @@ import sys
 import threading
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
+from itertools import count
 from pathlib import Path
 from typing import BinaryIO
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import requests
@@ -34,6 +35,7 @@ from benchmarks.eval.benchmark_tts_seedtts import (
 )
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
 from benchmarks.tasks import asr
+from benchmarks.tasks import tts as tts_tasks
 from benchmarks.tasks.tts import (
     _build_tts_payload,
     make_tts_send_fn,
@@ -200,9 +202,22 @@ def test_max_new_tokens_default_applies_without_cli(model, max_new_tokens):
     assert payload.get("max_new_tokens") == max_new_tokens
 
 
-def test_stream_send_fn_records_the_ids_the_outcome_collector_needs():
+def test_stream_send_fn_records_the_ids_the_outcome_collector_needs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Saved requests retain the server join ID and skip empty PCM markers."""
+    epoch_nanoseconds = count(1_700_000_000_000_000_000)
+    monkeypatch.setattr(tts_tasks.time, "time_ns", lambda: next(epoch_nanoseconds))
+    monotonic_ticks = count()
+    monkeypatch.setattr(
+        tts_tasks.time, "perf_counter", lambda: next(monotonic_ticks) / 4
+    )
+
     async def iter_pcm_chunks() -> AsyncIterator[tuple[bytes, bool]]:
+        yield b"", True
+        assert next(epoch_nanoseconds) == 1_700_000_000_000_000_001
         yield bytes(8), True
+        yield bytes(4), True
 
     session = MagicMock()
     session.post.return_value.__aenter__.return_value = MagicMock(
@@ -229,7 +244,161 @@ def test_stream_send_fn_records_the_ids_the_outcome_collector_needs():
     assert result.is_success
     assert result.speech_outcome_id == "speech-1"
     assert result.server_worker_id == "worker-b"
+    assert result.client_send_start_epoch_nanoseconds == 1_700_000_000_000_000_000
+    assert (
+        result.client_first_nonempty_pcm_epoch_nanoseconds == 1_700_000_000_000_000_002
+    )
+    assert result.client_end_epoch_nanoseconds == 1_700_000_000_000_000_004
+    assert result.audio_ttfp_s == 0.5
+    assert result.latency_s == 1.25
+    assert result.audio_chunk_count == 2
+    assert result.first_audio_payload_bytes == 8
+    assert result.inter_chunk_s == [0.25]
+    tts_tasks.save_speed_results([result], {}, {}, str(tmp_path))
+    saved = json.loads((tmp_path / "speed_results.json").read_text())["per_request"][0]
+    assert saved["id"] == SEEDTTS_SAMPLE.sample_id
+    assert saved["speech_outcome_id"] == "speech-1"
+    assert (
+        saved["client_send_start_epoch_nanoseconds"]
+        == result.client_send_start_epoch_nanoseconds
+    )
+    assert (
+        saved["client_first_nonempty_pcm_epoch_nanoseconds"]
+        == result.client_first_nonempty_pcm_epoch_nanoseconds
+    )
+    assert saved["client_end_epoch_nanoseconds"] == result.client_end_epoch_nanoseconds
 
+    session.get.assert_not_called()
+
+
+@pytest.mark.parametrize("end_of_http_chunk", [False, True])
+def test_fragmented_pcm_first_epoch_matches_first_fragment_ttfp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, end_of_http_chunk: bool
+) -> None:
+    """Fragment buffering must not replace first-payload time with chunk completion."""
+    monotonic_seconds = 0.0
+    epoch_nanoseconds = 0
+    monkeypatch.setattr(tts_tasks.time, "perf_counter", lambda: monotonic_seconds)
+    monkeypatch.setattr(tts_tasks.time, "time_ns", lambda: epoch_nanoseconds)
+
+    async def iter_pcm_chunks() -> AsyncIterator[tuple[bytes, bool]]:
+        nonlocal monotonic_seconds, epoch_nanoseconds
+        yield b"", True
+        monotonic_seconds, epoch_nanoseconds = 1.0, 100
+        yield bytes(2), False
+        monotonic_seconds, epoch_nanoseconds = 9.0, 900
+        yield bytes(6), end_of_http_chunk
+
+    session = MagicMock()
+    session.post.return_value.__aenter__.return_value = MagicMock(
+        status=200,
+        headers={
+            "Content-Type": "audio/pcm",
+            "X-SGLang-Omni-Speech-Id": "fragmented-speech",
+            "x-sample-rate": "4",
+            "x-channels": "1",
+            "x-bit-depth": "16",
+        },
+        content=MagicMock(iter_chunks=iter_pcm_chunks),
+    )
+    send = make_tts_send_fn("tts", "http://host/v1/audio/speech", stream=True)
+    result = asyncio.run(send(session, SEEDTTS_SAMPLE))
+    assert result.is_success
+    assert result.audio_ttfp_s == 1.0
+    assert result.client_first_nonempty_pcm_epoch_nanoseconds == 100
+    assert result.client_send_start_epoch_nanoseconds == 0
+    assert result.client_end_epoch_nanoseconds == 900
+    assert result.latency_s == 9.0
+    assert result.audio_chunk_count == 1
+    assert result.first_audio_payload_bytes == 8
+    assert result.audio_duration_s == 1.0
+    assert result.inter_chunk_s == []
+    tts_tasks.save_speed_results([result], {}, {}, str(tmp_path))
+    saved = json.loads((tmp_path / "speed_results.json").read_text())["per_request"][0]
+    assert saved["speech_outcome_id"] == "fragmented-speech"
+    assert saved["audio_ttfp_s"] == 1.0
+    assert saved["client_first_nonempty_pcm_epoch_nanoseconds"] == 100
+    assert saved["client_end_epoch_nanoseconds"] == 900
+
+
+@pytest.mark.parametrize(
+    "response_kind",
+    [
+        "empty_stream",
+        "partial_stream",
+        "http_error",
+        "connection_error",
+        "non_stream",
+        "no_header",
+    ],
+)
+def test_send_observability_preserves_missing_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, response_kind: str
+) -> None:
+    """Failed or non-PCM responses must not invent a first-PCM event or server ID."""
+    epoch_nanoseconds = count(1_700_000_000_000_000_000)
+    monkeypatch.setattr(tts_tasks.time, "time_ns", lambda: next(epoch_nanoseconds))
+
+    async def iter_pcm_chunks() -> AsyncIterator[tuple[bytes, bool]]:
+        if response_kind == "partial_stream":
+            yield b"\x00", True
+        elif response_kind == "no_header":
+            yield bytes(8), True
+        else:
+            yield b"", True
+
+    headers = {"Content-Type": "audio/pcm"}
+    if response_kind != "no_header":
+        headers["X-SGLang-Omni-Speech-Id"] = "server-speech"
+    else:
+        pass
+    response = MagicMock(
+        status=503 if response_kind == "http_error" else 200,
+        headers=headers,
+        content=MagicMock(iter_chunks=iter_pcm_chunks),
+        text=AsyncMock(return_value="unavailable"),
+        read=AsyncMock(
+            return_value=tts_tasks._build_streaming_wav_bytes(  # noqa: leading-underscore  # production name
+                [bytes(8)], (4, 1, 2)
+            )
+        ),
+    )
+    session = MagicMock()
+    session.post.return_value.__aenter__.return_value = response
+    if response_kind == "connection_error":
+        session.post.return_value.__aenter__.side_effect = asyncio.TimeoutError(
+            "timeout"
+        )
+    else:
+        pass
+    send = make_tts_send_fn(
+        "tts", "http://host/v1/audio/speech", stream=response_kind != "non_stream"
+    )
+    result = asyncio.run(send(session, SEEDTTS_SAMPLE))
+    assert result.is_success == (response_kind in {"non_stream", "no_header"})
+    assert result.client_send_start_epoch_nanoseconds == 1_700_000_000_000_000_000
+    if response_kind in {"partial_stream", "no_header"}:
+        assert (
+            result.client_first_nonempty_pcm_epoch_nanoseconds
+            == 1_700_000_000_000_000_001
+        )
+        assert result.client_end_epoch_nanoseconds == 1_700_000_000_000_000_002
+    else:
+        assert result.client_first_nonempty_pcm_epoch_nanoseconds is None
+        assert result.client_end_epoch_nanoseconds == 1_700_000_000_000_000_001
+    tts_tasks.save_speed_results([result], {}, {}, str(tmp_path))
+    saved = json.loads((tmp_path / "speed_results.json").read_text())["per_request"][0]
+    assert saved["speech_outcome_id"] == (
+        None if response_kind in {"connection_error", "no_header"} else "server-speech"
+    )
+    assert (
+        saved["client_first_nonempty_pcm_epoch_nanoseconds"]
+        == result.client_first_nonempty_pcm_epoch_nanoseconds
+    )
+    assert (
+        saved["client_send_start_epoch_nanoseconds"]
+        <= saved["client_end_epoch_nanoseconds"]
+    )
     session.get.assert_not_called()
 
 
