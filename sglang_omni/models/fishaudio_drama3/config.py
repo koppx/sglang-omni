@@ -7,15 +7,12 @@ from typing import ClassVar, Literal
 
 from pydantic import Field, PositiveInt
 
-from sglang_omni.config.placement import StagePlacementPlan, StagePlacementPlanner
 from sglang_omni.config.schema import (
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
     StageConfig,
 )
-from sglang_omni.config.topology import compile_logical_processes
-from sglang_omni.pipeline.replicas import expand_replica_stages
 
 PACKAGE = "sglang_omni.models.fishaudio_drama3"
 DEFAULT_CONTEXT_LENGTH = 16384
@@ -48,7 +45,6 @@ VOCODER_WINDOW_FIELDS = (
 class Drama3PreprocessingFactoryArgs(FactoryArgs):
     max_concurrency: int = Field(default=8, ge=1)
     reference_encode_dtype: Literal["float32", "bfloat16"] = "bfloat16"
-    reference_encode_cuda_streams: Literal[0, 2] = 0
     max_reference_audio_seconds: float = Field(default=60.0, gt=0)
 
 
@@ -136,9 +132,6 @@ class Drama3PipelineConfig(PipelineConfig):
         "vocoder": Drama3VocoderStageConfig,
     }
 
-    placement_policy: str | None = (
-        f"{PACKAGE}.config.validate_reference_encode_placement"
-    )
     model_path: str
     stages: list[StageConfig] = [
         Drama3PreprocessingStageConfig(
@@ -202,29 +195,6 @@ class Drama3PipelineConfig(PipelineConfig):
         else:
             pass
 
-        preprocessing = self.stage_named("preprocessing")
-        assert isinstance(preprocessing.factory, Drama3PreprocessingFactoryArgs)
-        if preprocessing.factory.reference_encode_cuda_streams == 2:
-            if (
-                self.placement_policy
-                != f"{PACKAGE}.config.validate_reference_encode_placement"
-            ):
-                raise ValueError(
-                    "two-stream reference encoding requires the Drama 3 placement_policy"
-                )
-            else:
-                pass
-            process_plan, stages = compile_logical_processes(self)
-            expanded, replicas = expand_replica_stages(stages, process_plan)
-            plan = StagePlacementPlanner(self).build(
-                stages_cfg=expanded,
-                apply_policy=False,
-                replica_instances=replicas.replicas,
-            )
-            validate_reference_encode_placement(self, plan)
-        else:
-            pass
-
     def stage_factory_kwargs(
         self, stage_name: str
     ) -> dict[str, int | str | tuple[int, ...]]:
@@ -250,55 +220,6 @@ class Drama3PipelineConfig(PipelineConfig):
 
     def supports_uploaded_voice_references(self) -> bool:
         return True
-
-
-def validate_reference_encode_placement(
-    config: PipelineConfig, plan: StagePlacementPlan
-) -> None:
-    preprocessing = config.stage_named("preprocessing")
-    factory = preprocessing.factory
-    assert isinstance(factory, Drama3PreprocessingFactoryArgs)
-    if factory.reference_encode_cuda_streams == 0:
-        return
-    else:
-        pass
-    if factory.reference_encode_dtype != "bfloat16" or (
-        factory.device is not None and factory.device.split(":")[0] != "cuda"
-    ):
-        raise ValueError("two-stream reference encoding requires CUDA and bfloat16")
-    else:
-        pass
-    process_plan, _ = compile_logical_processes(config)
-    process = process_plan.process_of("preprocessing")
-    placements = plan.instances_of("preprocessing")
-    if (
-        process.stage_names != ("preprocessing",)
-        or process.tp_size != 1
-        or process.num_replicas != 1
-        or len(placements) != 1
-        or placements[0].tp_size != 1
-        or len(placements[0].gpu_ids) != 1
-    ):
-        raise ValueError(
-            "two-stream reference encoding requires a dedicated preprocessing "
-            "process with TP1, one replica and one CUDA GPU"
-        )
-    else:
-        pass
-    preprocessing_gpu_ids = set(placements[0].gpu_ids)
-    other_gpu_ids = {
-        gpu_id
-        for stage_name in ("tts_engine", "vocoder")
-        for placement in plan.instances_of(stage_name)
-        for gpu_id in placement.gpu_ids
-    }
-    if preprocessing_gpu_ids & other_gpu_ids:
-        raise ValueError(
-            "two-stream reference encoding requires an isolated preprocessing GPU "
-            "not used by any tts_engine or vocoder instance"
-        )
-    else:
-        pass
 
 
 EntryClass = Drama3PipelineConfig

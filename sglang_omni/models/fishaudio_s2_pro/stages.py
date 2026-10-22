@@ -352,11 +352,6 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
         else:
             pass
         audio_lengths = torch.tensor([audios.shape[1]], dtype=torch.long)
-        return self.encode_prepared_waveform(audios, audio_lengths)
-
-    def encode_prepared_waveform(
-        self, audios: torch.Tensor, audio_lengths: torch.Tensor
-    ) -> torch.Tensor:
         with (
             torch.no_grad(),
             torch.autocast(

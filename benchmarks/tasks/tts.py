@@ -719,7 +719,7 @@ class VoiceCloneTTS:
                 raise ValueError(
                     f"Expected audio/pcm streaming response, got {content_type!r}"
                 )
-            async for chunk, _, _ in _iter_response_http_chunks(response):
+            async for chunk, _ in _iter_response_http_chunks(response):
                 if chunk:
                     pcm_chunks.append(chunk)
 
@@ -1221,30 +1221,22 @@ def _validate_raw_pcm_response_headers(
 
 async def _iter_response_http_chunks(
     response: aiohttp.ClientResponse,
-) -> AsyncIterator[tuple[bytes, float, int]]:
+) -> AsyncIterator[tuple[bytes, float]]:
     pending = bytearray()
     pending_start_s: float | None = None
-    pending_start_epoch_nanoseconds: int = 0
     async for data, end_of_http_chunk in response.content.iter_chunks():
         now = time.perf_counter()
         if data:
             if not pending:
                 pending_start_s = now
-                pending_start_epoch_nanoseconds = time.time_ns()
             pending.extend(data)
         if end_of_http_chunk and pending:
-            yield bytes(
-                pending
-            ), pending_start_s or now, pending_start_epoch_nanoseconds
+            yield bytes(pending), pending_start_s or now
             pending.clear()
             pending_start_s = None
 
     if pending:
-        yield (
-            bytes(pending),
-            pending_start_s or time.perf_counter(),
-            pending_start_epoch_nanoseconds,
-        )
+        yield bytes(pending), pending_start_s or time.perf_counter()
 
 
 async def _handle_raw_pcm_streaming_response(
@@ -1265,18 +1257,11 @@ async def _handle_raw_pcm_streaming_response(
         result.error = f"Expected audio/pcm streaming response, got {content_type!r}"
         return
 
-    async for (
-        chunk,
-        chunk_time,
-        chunk_start_epoch_nanoseconds,
-    ) in _iter_response_http_chunks(response):
+    async for chunk, chunk_time in _iter_response_http_chunks(response):
         if not chunk:
             continue
         if not chunk_times:
             result.audio_ttfp_s = chunk_time - start_time
-            result.client_first_nonempty_pcm_epoch_nanoseconds = (
-                chunk_start_epoch_nanoseconds
-            )
             result.first_audio_payload_bytes = len(chunk)
         chunk_times.append(chunk_time)
         pcm_chunks.append(bytes(chunk))
@@ -1449,17 +1434,16 @@ def make_tts_send_fn(
             **gen_kwargs,
         )
         start_time = time.perf_counter()
-        result.client_send_start_epoch_nanoseconds = time.time_ns()
         try:
             async with session.post(api_url, json=payload) as response:
-                result.speech_outcome_id = response.headers.get(
-                    "X-SGLang-Omni-Speech-Id", ""
-                )
                 if response.status != 200:
                     result.error = f"HTTP {response.status}: {await response.text()}"
                 elif stream:
                     await _handle_raw_pcm_streaming_response(
                         response, result, start_time, save_audio_dir
+                    )
+                    result.speech_outcome_id = response.headers.get(
+                        "X-SGLang-Omni-Speech-Id", ""
                     )
                     result.server_worker_id = response.headers.get(
                         "X-SGLang-Omni-Worker", ""
@@ -1472,7 +1456,6 @@ def make_tts_send_fn(
             result.error = str(exc)
         finally:
             result.latency_s = time.perf_counter() - start_time
-            result.client_end_epoch_nanoseconds = time.time_ns()
         return result
 
     return send_fn

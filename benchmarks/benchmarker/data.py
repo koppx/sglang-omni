@@ -29,9 +29,6 @@ class RequestResult:
     tok_per_s: float = 0.0
     finish_reason: FinishReason = FinishReason.UNKNOWN
     speech_outcome_id: str = ""
-    client_send_start_epoch_nanoseconds: int | None = None
-    client_first_nonempty_pcm_epoch_nanoseconds: int | None = None
-    client_end_epoch_nanoseconds: int | None = None
     server_worker_id: str = ""
     wav_path: str = ""
     error: str = ""

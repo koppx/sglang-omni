@@ -34,16 +34,12 @@ from sglang_omni.models.fishaudio_drama3.config import (
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
-from sglang_omni.models.fishaudio_drama3.reference_encode import ReferenceEncodeOwner
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
 from sglang_omni.models.fishaudio_drama3.stream_windows import stream_window_lengths
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
     WindowGraphDecoder,
-)
-from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
-    Attention,
 )
 from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceEncodeHook,
@@ -90,54 +86,6 @@ def resolve_codec_directory(codec_path: str) -> str:
         )
 
 
-class Drama3ReferenceEncodeHook(FishReferenceEncodeHook):
-    owner: ReferenceEncodeOwner
-
-    def encode_prepared_waveform(
-        self, audios: torch.Tensor, audio_lengths: torch.Tensor
-    ) -> torch.Tensor:
-        return self.owner.encode(
-            audios,
-            audio_lengths,
-            duration_seconds=audios.shape[-1] / self.codec.sample_rate,
-        )
-
-    def encode_prepared(
-        self, audios: torch.Tensor, audio_lengths: torch.Tensor
-    ) -> torch.Tensor:
-        indices, _ = self.codec.encode(
-            audios.to(self.device), audio_lengths.to(self.device)
-        )
-        if indices.ndim == 3:
-            indices = indices[0]
-        else:
-            pass
-        return indices.cpu()
-
-    def close(self) -> None:
-        self.owner.close()
-
-
-class Drama3PreprocessingScheduler(ThreadedSimpleScheduler):
-    def __init__(
-        self, preprocessor: Drama3SpeechPreprocessor, *, max_concurrency: int
-    ) -> None:
-        super().__init__(preprocessor, max_concurrency=max_concurrency)
-        self.reference_encoder = preprocessor.reference_encoder
-
-    def stop(self) -> None:
-        super().stop()
-        self.executor.shutdown(wait=False, cancel_futures=True)
-        self.reference_encoder.close()
-
-    def start(self) -> None:
-        try:
-            super().start()
-        finally:
-            self.stop()
-            self.executor.shutdown(wait=True, cancel_futures=True)
-
-
 def create_preprocessing_executor(
     model_path: str,
     *,
@@ -147,7 +95,6 @@ def create_preprocessing_executor(
     max_prompt_rows: int,
     codec_path: str,
     reference_encode_dtype: Literal["float32", "bfloat16"],
-    reference_encode_cuda_streams: Literal[0, 2],
     max_reference_audio_seconds: float,
 ) -> ThreadedSimpleScheduler:
     """Speech requests to prompt rows; reference audio encodes with the vocoder's codec."""
@@ -161,94 +108,35 @@ def create_preprocessing_executor(
         )
     else:
         pass
-    if reference_encode_cuda_streams not in (0, 2):
-        raise ValueError("reference_encode_cuda_streams must be 0 or 2")
-    elif reference_encode_cuda_streams == 2 and (
-        torch.device(resolved_device).type != "cuda"
-        or reference_encode_dtype != "bfloat16"
-    ):
-        raise ValueError("two-stream reference encoding requires CUDA and bfloat16")
-    else:
-        pass
     checkpoint_dir = resolve_checkpoint(model_path)
     codec_directory = resolve_codec_directory(codec_path)
     codec = load_codec(codec_directory, resolved_device)
-    if reference_encode_cuda_streams == 2:
-        if (
-            any(module.training for module in codec.modules())
-            or any(
-                parameter.dtype != torch.float32
-                for parameter in codec.parameters()
-                if parameter.is_floating_point()
-            )
-            or any(
-                isinstance(module, Attention) and module.kv_cache is not None
-                for module in codec.modules()
-            )
-        ):
-            raise ValueError(
-                "two-stream reference codec must be eval, FP32 and have no KV cache"
-            )
-        else:
-            pass
-        with torch.no_grad(), torch.autocast("cuda", enabled=False):
-            codec.fold_weight_norm()
-        torch.cuda.synchronize(torch.device(resolved_device))
-        hook_class = Drama3ReferenceEncodeHook
-    else:
-        hook_class = FishReferenceEncodeHook
-    reference_encode_hook = hook_class(
+    reference_encode_hook = FishReferenceEncodeHook(
         codec=codec,
         checkpoint_id=os.path.join(codec_directory, CODEC_FILE_NAME),
         device=resolved_device,
         autocast_dtype=torch.bfloat16 if reference_encode_dtype == "bfloat16" else None,
         max_reference_audio_seconds=max_reference_audio_seconds,
     )
-    if isinstance(reference_encode_hook, Drama3ReferenceEncodeHook):
-        reference_encode_hook.owner = ReferenceEncodeOwner(
-            device=torch.device(resolved_device),
-            device_encode=reference_encode_hook.encode_prepared,
+    if not is_on_cpu:
+        warmup_seconds = min(
+            REFERENCE_ENCODE_WARMUP_SECONDS, max_reference_audio_seconds
+        )
+        reference_encode_hook.encode_reference_waveform(
+            torch.zeros((1, int(codec.sample_rate * warmup_seconds))),
+            int(codec.sample_rate),
         )
     else:
         pass
-    try:
-        if not is_on_cpu:
-            warmup_seconds = min(
-                REFERENCE_ENCODE_WARMUP_SECONDS, max_reference_audio_seconds
-            )
-            audios = torch.zeros((1, int(codec.sample_rate * warmup_seconds)))
-            if isinstance(reference_encode_hook, Drama3ReferenceEncodeHook):
-                reference_encode_hook.owner.warmup(
-                    audios, torch.tensor([audios.shape[-1]], dtype=torch.long)
-                )
-            else:
-                reference_encode_hook.encode_reference_waveform(
-                    audios, int(codec.sample_rate)
-                )
-        else:
-            pass
-        preprocessor = Drama3SpeechPreprocessor(
-            tokenizer=Tokenizer.from_file(
-                os.path.join(checkpoint_dir, "tokenizer.json")
-            ),
-            config=FishOmniConfig.from_pretrained(checkpoint_dir),
-            max_prompt_rows=max_prompt_rows,
-            reference_encoder=ReferenceEncodeService(
-                reference_encode_hook, log_prefix="Fish Audio Drama 3"
-            ),
-        )
-        scheduler_class = (
-            Drama3PreprocessingScheduler
-            if reference_encode_cuda_streams == 2
-            else ThreadedSimpleScheduler
-        )
-        return scheduler_class(preprocessor, max_concurrency=max_concurrency)
-    except BaseException:
-        if isinstance(reference_encode_hook, Drama3ReferenceEncodeHook):
-            reference_encode_hook.close()
-        else:
-            pass
-        raise
+    preprocessor = Drama3SpeechPreprocessor(
+        tokenizer=Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json")),
+        config=FishOmniConfig.from_pretrained(checkpoint_dir),
+        max_prompt_rows=max_prompt_rows,
+        reference_encoder=ReferenceEncodeService(
+            reference_encode_hook, log_prefix="Fish Audio Drama 3"
+        ),
+    )
+    return ThreadedSimpleScheduler(preprocessor, max_concurrency=max_concurrency)
 
 
 def create_tts_engine_executor(
