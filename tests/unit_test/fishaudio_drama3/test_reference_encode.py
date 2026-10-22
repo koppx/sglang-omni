@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
-from contextlib import nullcontext
-from threading import Barrier, Event, Lock, get_ident
+from contextlib import contextmanager, nullcontext
+from threading import Barrier, Event, Lock, get_ident, local
 from typing import Protocol
 
 import pytest
@@ -20,13 +21,21 @@ class DeviceEncodeWarmup(Protocol):
     def __call__(self) -> torch.Tensor: ...
 
 
+class StreamState(local):
+    stream: FakeStream | None = None
+
+
 class FakeStream:
+    current: StreamState = StreamState()
+
     def __init__(self, device: torch.device) -> None:
         self.device: torch.device = device
         self.thread_id: int = get_ident()
+        self.synchronized_thread_ids: list[int] = []
 
     def synchronize(self) -> None:
-        assert get_ident() == self.thread_id
+        assert self.current.stream is self
+        self.synchronized_thread_ids.append(get_ident())
 
 
 class GatedEncode:
@@ -37,6 +46,8 @@ class GatedEncode:
         self.lock: Lock = Lock()
         self.failure_ids: set[int] = set()
         self.thread_ids: set[int] = set()
+        self.streams: dict[int, FakeStream] = {}
+        self.warmup_streams: set[FakeStream] = set()
         self.warmup_barrier: Barrier | None = None
 
     def __call__(
@@ -48,6 +59,10 @@ class GatedEncode:
         with self.lock:
             self.order.append(request_id)
             self.thread_ids.add(get_ident())
+            stream = FakeStream.current.stream
+            assert stream is not None
+            self.streams[request_id] = stream
+            self.warmup_streams.add(stream)
         self.entered[request_id].set()
         if self.warmup_barrier is not None:
             self.warmup_barrier.wait(timeout=TIMEOUT_SECONDS)
@@ -71,9 +86,15 @@ def cuda_boundary(monkeypatch: pytest.MonkeyPatch) -> list[torch.device]:
         assert device == torch.device("cuda:3")
         return nullcontext()
 
-    def stream_context(stream: FakeStream) -> nullcontext[None]:
-        assert stream.thread_id == get_ident()
-        return nullcontext()
+    @contextmanager
+    def stream_context(stream: FakeStream) -> Iterator[None]:
+        assert stream.device == torch.device("cuda:3")
+        previous_stream = FakeStream.current.stream
+        FakeStream.current.stream = stream
+        try:
+            yield
+        finally:
+            FakeStream.current.stream = previous_stream
 
     def autocast_context(
         device_type: str, *, dtype: torch.dtype, cache_enabled: bool
@@ -108,6 +129,7 @@ def test_short_overlap_long_fifo_and_boundaries(
             )
             assert callback.entered[0].wait(TIMEOUT_SECONDS)
             assert callback.entered[1].wait(TIMEOUT_SECONDS)
+            assert callback.streams[0] is not callback.streams[1]
             long = callers.submit(
                 owner.encode, torch.tensor([2]), lengths, duration_seconds=10.01
             )
@@ -140,6 +162,69 @@ def test_short_overlap_long_fifo_and_boundaries(
             release.set()
         owner.close()
     assert cuda_boundary == [torch.device("cuda:3")] * 2
+
+
+def test_long_reuses_stream_across_host_threads_after_failure(
+    cuda_boundary: list[torch.device],
+) -> None:
+    """Exclusive jobs must not switch CUDA streams when pool threads alternate."""
+    callback = GatedEncode()
+    callback.failure_ids.add(0)
+    callback.release[0].set()
+    callback.release[1].set()
+    owner = ReferenceEncodeOwner(torch.device("cuda:3"), callback)
+    try:
+        for request_id, target_stream in enumerate(owner.worker_streams):
+            workers_entered = Barrier(3)
+            release_workers = {
+                stream.thread_id: Event() for stream in owner.worker_streams
+            }
+
+            def occupy_worker() -> None:
+                thread_id = get_ident()
+                workers_entered.wait(timeout=TIMEOUT_SECONDS)
+                assert release_workers[thread_id].wait(TIMEOUT_SECONDS)
+
+            blockers = [owner.executor.submit(occupy_worker) for _ in range(2)]
+            try:
+                workers_entered.wait(timeout=TIMEOUT_SECONDS)
+                release_workers[target_stream.thread_id].set()
+                if request_id == 0:
+                    with pytest.raises(ValueError, match="encode failed"):
+                        owner.encode(
+                            torch.tensor([request_id]),
+                            torch.tensor([1]),
+                            duration_seconds=60,
+                        )
+                else:
+                    assert (
+                        owner.encode(
+                            torch.tensor([request_id]),
+                            torch.tensor([1]),
+                            duration_seconds=60,
+                        ).item()
+                        == request_id
+                    )
+                assert callback.thread_ids == {
+                    stream.thread_id
+                    for stream in owner.worker_streams[: request_id + 1]
+                }
+                assert callback.streams[request_id] is owner.long_stream
+                assert (
+                    owner.long_stream.synchronized_thread_ids[-1]
+                    == target_stream.thread_id
+                )
+                with owner.condition:
+                    assert owner.outstanding_jobs == 0
+                    assert owner.active_permits == 0
+            finally:
+                for release_worker in release_workers.values():
+                    release_worker.set()
+                for blocker in blockers:
+                    blocker.result(TIMEOUT_SECONDS)
+        assert len(set(owner.long_stream.synchronized_thread_ids)) == 2
+    finally:
+        owner.close()
 
 
 def test_overflow_close_wakes_pending_and_drains_running(
@@ -216,6 +301,7 @@ def test_warmup_executes_both_workers_and_releases_failure(
         with pytest.raises(ValueError, match="encode failed"):
             owner.warmup(torch.tensor([0]), torch.tensor([1]))
         assert len(callback.thread_ids) == 2
+        assert len(callback.warmup_streams) == 2
         callback.warmup_barrier = None
         callback.release[1].set()
         assert (
@@ -236,7 +322,8 @@ def test_failed_gpu_work_drains_before_releasing_admission(
     synchronize_release = Event()
 
     def synchronize(stream: FakeStream) -> None:
-        assert stream.thread_id == get_ident()
+        assert FakeStream.current.stream is stream
+        assert stream is owner.long_stream
         synchronize_entered.set()
         assert synchronize_release.wait(TIMEOUT_SECONDS)
 

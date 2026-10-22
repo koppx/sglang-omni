@@ -55,3 +55,55 @@ Earlier invalid indexed-device and mismatched-TF32 harness attempts remain retai
 Earlier temporary-worker full-1,088 runs, approximately +10% throughput points and quality estimates describe different experimental implementations/protocols. They are not formal factory production proof and cannot override this hot/continuity gate. The existing historical report and cookbook modifications are preserved, not rewritten. No performance recommendation is added to the cookbook.
 
 The initial stop decision preserved the opt-in implementation with default `0`, the capped output, underruns and failed harness attempts without launching full-corpus quality or tuning. The author subsequently requested a draft PR for review of this incomplete experiment. Draft publication does not waive the failed performance/continuity gates or authorize merging; no additional GPU work or quality scoring is implied.
+
+## Follow-up diagnosis, minimal fix and postfix gate (2026-10-22)
+
+**Decision: still not ready to merge.** This follow-up does not replace or rewrite the original failed gate above. The long-input memory fix has narrower supporting evidence, but the uninstrumented postfix service run fails three of 32 frozen engineering criteria. Full-1,088-prompt generation and quality scoring were **NOT RUN** because the guards failed; default `reference_encode_cuda_streams=0` remains unchanged.
+
+### Cache-phase diagnosis, not acceptance
+
+`drama3-cache-phase-diagnostic-20261022/diagnostic-summary.json` records six fresh boots (Acal1/Acal2/A1/B1/B2/A2), 1,152 measured requests plus 192 discarded warmups. Every measured hot phase has exactly 64 cache hits and zero encoder leaders; available reference-code multisets match exactly, including multiplicities. Direct reference-encoder GPU speedup therefore cannot explain the hot contrasts. Instrumented get-or-encode wall intervals include observer work and are not isolated encoder or full-stage timings.
+
+Acal2 baseline C100 is 95.31%. A/A variation is descriptive evidence of instability, not a noise bound or proof that the earlier regression was noise. Unseeded downstream generation, output lengths, scheduling, clocks, power and host load remain possible confounds; the cause of the hot differences is unknown. Identical cached codes do not make downstream generated work identical.
+
+### Minimal long-input stream fix and four-arm memory evidence
+
+The recorded runtime change touches only 20 lines: long encoding reuses one existing stable execution stream rather than inheriting the calling worker's stream. It adds no execution stream and changes no hot-cache code. New CPU hot-cache cases cover factory streams 0 and 2; CPU device-boundary tests were fixed. Recorded verification is 198 passed, four accelerator cases deselected, with independent review finding no verified blocker. These are supplied verification results, not tests rerun for this documentation update. The coordinator reports that the full pre-commit run passed Python/style checks but Rust formatting again failed because `cargo` was missing (exit 127); full pre-commit did not pass, and it was not rerun for this documentation update.
+
+Memory evidence is `drama3-profile-444026/reference-production-memory-{recovery-v1,fixed-long-v1,stable-stream-v1}/memory*.json`. The four arms below are distinct controls, not interchangeable implementations. Retry counters are cumulative after each round's 60-second call.
+
+| Memory arm | End-of-round allocation retries | Peak reserved (GiB) | Peak allocated (GiB) |
+|---|---|---:|---:|
+| baseline0 | 0 / 0 / 0 / 0 / 0 / 0 | 5.826172 | 4.788034 |
+| old_B_alternating | 1 / 1 / 2 / 2 / 3 / 3 | 5.990234 | 4.817624 |
+| fixed_worker | 1 / 1 / 1 / 1 / 1 / 1 | 5.863281 | 4.817624 |
+| stable_execution_stream | 1 / 1 / 1 / 1 / 1 / 1 | 5.863281 | 4.847897 |
+
+The new stable-stream arm alternates two host threads across six long calls but uses the same execution stream. All 18 calls match the baseline envelope across all ten codebooks. All arms stay within the 6 GiB allocator budget with no OOM and no `empty_cache` rescue. New peak reserved is 5.863 GiB versus old B's 5.990 GiB; peak allocated is 4.848 versus 4.818 GiB. This is allocator accounting, not total device-memory accounting.
+
+The stable-stream arm has a one-off **+32 MiB live allocation**, then a **1.671465 GiB** plateau through the later rounds and shutdown checkpoint. Ownership of that retained allocation is unknown. Stable retry counts do not prove zero extra overhead, no retained tensors, or arbitrary long-workload safety.
+
+### Uninstrumented postfix acceptance
+
+`drama3-reference-postfix-acceptance-v1/formal-postfix-summary.json` records four fresh A1/B1/B2/A2 services without cache observers or `sitecustomize`: all **896 requests completed**, comprising **768 measured plus 128 discarded warmups**, with **zero errors**. Each visit measures cold, hot1 and hot2, 64 requests each, after 32 discarded warmups. The frozen criteria hash, integrity checks, compact cells, cap IDs and every nonzero underrun are retained under `followup` in the adjacent JSON; massive per-request comparison arrays are not copied.
+
+| Visit | Regime | Completed / errors / caps | Frames/s | E2E p95 (s) | TTFA p95 (s) | C50 (%) | C100 (%) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| A1 | cold | 64 / 0 / 0 | 329.8 | 5.112 | 3.4704 | 100.0 | 100.0 |
+| A1 | hot1 | 64 / 0 / 0 | 584.8 | 3.401 | 0.6798 | 98.44 | 100.0 |
+| A1 | hot2 | 64 / 0 / 0 | 544.2 | 3.38 | 0.6297 | 95.31 | 98.44 |
+| B1 | cold | 64 / 0 / 1 | 540.5 | 3.715 | 1.5593 | 100.0 | 100.0 |
+| B1 | hot1 | 64 / 0 / 0 | 627.4 | 3.004 | 0.5291 | 100.0 | 100.0 |
+| B1 | hot2 | 64 / 0 / 0 | 640.4 | 3.288 | 0.5398 | 100.0 | 100.0 |
+| B2 | cold | 64 / 0 / 0 | 570.6 | 3.289 | 1.5193 | 100.0 | 100.0 |
+| B2 | hot1 | 64 / 0 / 0 | 627.9 | 2.984 | 0.5254 | 100.0 | 100.0 |
+| B2 | hot2 | 64 / 0 / 0 | 628.6 | 3.322 | 0.5118 | 100.0 | 100.0 |
+| A2 | cold | 64 / 0 / 0 | 381.7 | 4.481 | 3.0139 | 100.0 | 100.0 |
+| A2 | hot1 | 64 / 0 / 0 | 643.7 | 3.015 | 0.5442 | 100.0 | 100.0 |
+| A2 | hot2 | 64 / 0 / 0 | 617.6 | 3.138 | 0.4848 | 100.0 | 100.0 |
+
+Cold throughput improves 329.8→540.5 and 381.7→570.6 frames/s. Hot throughput is mixed: A1→B1 hot1 584.8→627.4 and hot2 544.2→640.4; A2→B2 hot1 643.7→627.9 (a decrease) and hot2 617.6→628.6. All hot throughput guards pass the frozen ≥0.95 ratio, but this is not uniform improvement and does not establish that the long-input fix caused any hot benefit. All measured B cells have C100=100%; baseline A1 hot2 is 98.44%.
+
+The three failures are B1 cold cap count **1 versus A1's 0**, B2/A2 hot2 E2E p95 **3.322/3.138 s (+5.8636%)**, and hot2 TTFA p95 **0.5118/0.4848 s (+5.5693%)**; both latency limits are +5%. B1 cold capped ID is `common_voice_en_17263752-common_voice_en_17263750` (63 `stop`, one `length`). Postfix nonzero underruns are A1 hot1 `common_voice_en_17444666-common_voice_en_17444667` (0.0682 s), and A1 hot2 that same ID (0.1641 s), `common_voice_en_17784-common_voice_en_17785` (0.0635 s), and `common_voice_en_177895-common_voice_en_177894` (0.0634 s). No cap or underrun is filtered, retried away, or substituted for the historical records above.
+
+Only two independent server pairs exist; hot1/hot2 repeats are not independent server replicates. Frozen engineering thresholds are not statistical non-inferiority, confidence intervals or causal-effect estimates. Improved throughput in some new cells does not erase the original failed hot/continuity gate or solve the remaining postfix failures. No additional GPU work, runtime edits, quality evaluation or merge approval is implied.

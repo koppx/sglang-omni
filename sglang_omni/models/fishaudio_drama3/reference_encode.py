@@ -62,6 +62,8 @@ class ReferenceEncodeOwner:
         self.device_encode: DeviceEncode = device_encode
         self.worker_state: WorkerState = WorkerState()
         self.condition: Condition = Condition()
+        self.worker_streams: list[torch.cuda.Stream] = []
+        self.long_stream: torch.cuda.Stream
         self.waiting: deque[Admission] = deque()
         self.outstanding_jobs: int = 0
         self.active_permits: int = 0
@@ -83,6 +85,7 @@ class ReferenceEncodeOwner:
             ]
             for startup_future in startup_futures:
                 startup_future.result(timeout=2 * WORKER_START_TIMEOUT_SECONDS)
+            self.long_stream = self.worker_streams[0]
         except BaseException:
             startup_barrier.abort()
             self.close()
@@ -91,6 +94,8 @@ class ReferenceEncodeOwner:
     def initialize_worker(self) -> None:
         torch.cuda.set_device(self.device)
         self.worker_state.stream = torch.cuda.Stream(device=self.device)
+        with self.condition:
+            self.worker_streams.append(self.worker_state.stream)
 
     def encode(
         self,
@@ -132,7 +137,10 @@ class ReferenceEncodeOwner:
                     raise RuntimeError("reference encoder is closed")
                 else:
                     encode_future = self.executor.submit(
-                        self.encode_on_worker, audios, audio_lengths
+                        self.encode_on_worker,
+                        audios,
+                        audio_lengths,
+                        is_exclusive=admission.permits == WORKER_COUNT,
                     )
                     self.waiting.popleft()
                     self.active_permits += admission.permits
@@ -157,7 +165,7 @@ class ReferenceEncodeOwner:
 
         def warmup_on_worker() -> torch.Tensor:
             warmup_barrier.wait(timeout=WORKER_START_TIMEOUT_SECONDS)
-            return self.encode_on_worker(audios, audio_lengths)
+            return self.encode_on_worker(audios, audio_lengths, is_exclusive=False)
 
         warmup_futures: list[Future[torch.Tensor]] = []
         with self.condition:
@@ -184,9 +192,13 @@ class ReferenceEncodeOwner:
                 self.condition.notify_all()
 
     def encode_on_worker(
-        self, audios: torch.Tensor, audio_lengths: torch.Tensor
+        self,
+        audios: torch.Tensor,
+        audio_lengths: torch.Tensor,
+        *,
+        is_exclusive: bool,
     ) -> torch.Tensor:
-        stream = self.worker_state.stream
+        stream = self.long_stream if is_exclusive else self.worker_state.stream
         with (
             torch.cuda.device(self.device),
             torch.cuda.stream(stream),

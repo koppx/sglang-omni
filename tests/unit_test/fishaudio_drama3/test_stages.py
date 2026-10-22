@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import io
+import wave
 from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from threading import Barrier, Event, Lock
 from typing import Literal
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -220,7 +223,7 @@ class EncodeRecordingCodec:
         self, audios: torch.Tensor, audio_lengths: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         self.encoded_shapes.append(tuple(audios.shape))
-        return torch.zeros((1, 10, 1), dtype=torch.long), audio_lengths
+        return torch.arange(20).reshape(1, 10, 2), audio_lengths
 
 
 @pytest.mark.parametrize(
@@ -528,8 +531,21 @@ def test_reference_preparation_preserves_device_context_and_output() -> None:
         hook.encode_reference_waveform(torch.ones(2, 22051), 22050)
 
 
+@pytest.fixture
+def cpu_factory_device_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    def resolve_concrete_device(
+        device: str | None, index: int | None = None
+    ) -> torch.device:
+        assert device in ("cpu", "cuda")
+        assert index == 0
+        return torch.device("cpu" if device == "cpu" else "cuda:0")
+
+    monkeypatch.setattr(stages, "resolve_concrete_device", resolve_concrete_device)
+
+
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 def test_two_stream_factory_rejects_unsupported_device_or_precision_before_loading(
+    cpu_factory_device_boundary: None,
     codec_loads: CodecLoads,
     device: str,
 ) -> None:
@@ -576,7 +592,7 @@ def cpu_cuda_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
         dtype: torch.dtype | None = None,
         cache_enabled: bool = True,
     ) -> nullcontext[None]:
-        assert device_type == "cuda"
+        assert device_type in ("cpu", "cuda")
         return nullcontext()
 
     monkeypatch.setattr(torch.cuda, "set_device", set_device)
@@ -585,6 +601,85 @@ def cpu_cuda_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "device", device_context)
     monkeypatch.setattr(torch.cuda, "stream", stream_context)
     monkeypatch.setattr(torch, "autocast", autocast_context)
+
+
+@pytest.mark.parametrize("reference_encode_cuda_streams", [0, 2])
+def test_reference_cache_hits_return_independent_cpu_codes_without_encoding(
+    cpu_cuda_boundary: None,
+    reference_encode_cuda_streams: Literal[0, 2],
+) -> None:
+    """Hot references must bypass encoding and never expose mutable cache storage."""
+    codec = EncodeRecordingCodec()
+    if reference_encode_cuda_streams == 2:
+        hook = stages.Drama3ReferenceEncodeHook(codec=codec, checkpoint_id="codec")
+        owner = ReferenceEncodeOwner(torch.device("cuda:0"), hook.encode_prepared)
+        hook.owner = owner
+        owner_encode_context = patch.object(owner, "encode", wraps=owner.encode)
+    else:
+        hook = FishReferenceEncodeHook(codec=codec, checkpoint_id="codec")
+        owner_encode_context = nullcontext(None)
+    service = ReferenceEncodeService(hook)
+    waveform_bytes = io.BytesIO()
+    with wave.open(waveform_bytes, "wb") as waveform:
+        waveform.setnchannels(1)
+        waveform.setsampwidth(2)
+        waveform.setframerate(codec.sample_rate)
+        waveform.writeframes(b"\x00\x00" * codec.sample_rate)
+    reference = {"bytes": waveform_bytes.getvalue()}
+    expected_codes = torch.arange(20).reshape(10, 2)
+    try:
+        with (
+            patch.object(codec, "encode", wraps=codec.encode) as codec_encode,
+            owner_encode_context as owner_encode,
+        ):
+            first_codes = service.get_or_encode(reference)
+            assert first_codes.device.type == "cpu"
+            assert first_codes.dtype == torch.long
+            assert torch.equal(first_codes, expected_codes)
+            assert codec_encode.call_count == 1
+            assert codec.encoded_shapes == [(1, codec.sample_rate)]
+            if owner_encode is not None:
+                assert owner_encode.call_count == 1
+            else:
+                pass
+            cold_stats = service.stats()
+            assert cold_stats["misses"] == 1
+            assert cold_stats["hits"] == 0
+            assert cold_stats["entries"] == 1
+            assert (
+                cold_stats["bytes"]
+                == expected_codes.numel() * expected_codes.element_size()
+            )
+            first_codes.fill_(-1)
+
+            second_codes = service.get_or_encode(
+                {"bytes": bytes(bytearray(reference["bytes"]))}
+            )
+            assert second_codes.device.type == "cpu"
+            assert second_codes.dtype == torch.long
+            assert torch.equal(second_codes, expected_codes)
+            assert torch.all(first_codes == -1)
+            assert second_codes.data_ptr() != first_codes.data_ptr()
+            assert service.stats() == {**cold_stats, "hits": cold_stats["hits"] + 1}
+            second_codes.fill_(-2)
+
+            third_codes = service.get_or_encode(reference)
+            assert third_codes.device.type == "cpu"
+            assert third_codes.dtype == torch.long
+            assert torch.equal(third_codes, expected_codes)
+            assert torch.all(second_codes == -2)
+            assert third_codes.data_ptr() not in (
+                first_codes.data_ptr(),
+                second_codes.data_ptr(),
+            )
+            assert service.stats() == {**cold_stats, "hits": cold_stats["hits"] + 2}
+            assert codec_encode.call_count == 1
+            if owner_encode is not None:
+                assert owner_encode.call_count == 1
+            else:
+                pass
+    finally:
+        service.close()
 
 
 class FoldableCPUCodec(torch.nn.Module):
@@ -601,6 +696,7 @@ class FoldableCPUCodec(torch.nn.Module):
 
 def test_factory_warmup_failure_closes_and_drains_real_owner(
     cpu_cuda_boundary: None,
+    cpu_factory_device_boundary: None,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
