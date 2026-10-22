@@ -169,3 +169,84 @@ The current local benchmark-only correlation fix adds typed optional epoch-nanos
 The joint evidence therefore consists of finite reference-code correctness, bounded allocator/lifecycle results, improved full mixed-reference service metrics, retained adverse outcomes and descriptive quality uncertainty. It does not overwrite the failed small/postfix guards, establish formal hot or quality non-inferiority, authorize production/default changes, or supply a ready/merge verdict. The main reviewer owns final status.
 
 Documentation sanity check: the current whole-repository pre-commit run again passed Python/style and other available hooks, but Rust formatting failed with missing `cargo` (exit 127); the whole run did not pass. The coordinator reports prior Rust quality CI passes separately. Final independent review reports no verified PR-new-code blocker; this does not change the non-inferiority limits or grant merge approval. Publication and any review-status transition remain the main reviewer’s responsibility.
+
+## H100-only strategy and deployment-cost supplement (2026-10-22)
+
+> **Latest decision: H100-only design validation, not production readiness. Current PR does not satisfy all guards.** Keep the implementation opt-in with default `reference_encode_cuda_streams=0`. Single-card B2 fails continuity; dual-card hot2 fails throughput in both pairings and E2E p95 forward. No unique optimum, universal best-two-stream strategy, portability, cost-win or energy-win claim is supported. This supplements rather than deletes the historical evidence above.
+
+### Scope and fair strategy screen
+
+Only the exact **two H100 NVL** cards were tested; no other GPU was tested. Source HEAD is `cc6bfa2f9f2267579098ccea489aff8294396751`. The adjacent JSON adds only `h100_strategy_cost_supplement`, retaining raw-source/script/cohort hashes, public asset revisions, all phase guards, compact costs and adverse-outcome IDs without machine paths or audio/code arrays. Production code/configuration is unchanged.
+
+`drama3-h100-strategy-fair-20261022/verification.json` repairs the comparison with fair FIFO admission: 128 real references × cold/repeat1/repeat2 = **384 calls per n**, n=1–4, all outputs exact across **all ten codebooks** against the retained original baseline codes. **INVALID old timings** from `drama3-h100-strategy-20261022` are excluded from every ranking: original0 had CPU-overlap contamination and non-FIFO admission caused severe starvation. Original0 is a code baseline only, not a clean timing control.
+
+| n | Cold frames/s | Pooled hot frames/s | Hot repeat1 / repeat2 p95 (ms) |
+|---|---:|---:|---:|
+| 1 | 984 | 3879 | 232.1 / 228.5 |
+| 2 | 1451 | 3602 | 485.4 / 264.1 |
+| 3 | 1665 | 3144 | 546.4 / 324.5 |
+| 4 | 1523 | 3066 | 563.9 / 453.9 |
+
+n=1 has higher pooled hot throughput and better p95 than n=2 in **both** repeats; cold n=3 is fastest. Material repeat variance and only two hot passes preclude a unique optimum. Timings include CPU resampling, admission, H2D, encode, D2H, synchronization, hashing and diagnostic bookkeeping/serialization (explicit final JSON save excluded from phase wall): **neither GPU-only compute nor full file decode**. Fixed eight outstanding waveforms aligns with eight callers, not a tested optimal queue depth.
+
+Natural equal-length batch2/batch4 fail exact parity at **104/217 code indices**, with differences across all ten books; eligible coverage is only **14/128 and 4/128**. They stopped before timed or mixed-length gates. This rejects the exact-code contract, not batching as inherently incorrect or a generated-quality claim.
+
+n=3/n=4 boundary runs actually exercise **3/4 concurrent 10-second short calls** and exclusive long calls, with exact codes and no OOM. Peak reserved is **5.969/5.992 GiB**, allocator retries **5/8**. Long jobs reserve all permits but choose a **free worker**, not production’s stable `long_stream`; no per-transition memory history exists. This is not stable-long-stream validation, proof of leak freedom, or evidence that stream count caused retries. The 10-second cutoff remains conservative under the existing 6 GiB allocator baseline; repeated/cropped loops of one public waveform are not varied real long-input coverage.
+
+### Service deployment and individual guard outcomes
+
+`drama3-h100-service-cost-20261022/service-summary.json` records **eight fresh boots, 1,664 completed requests: 256 discarded warmups + 1,408 measured, zero errors, three baseline-only caps**. Each completed measured cell has 64 requests. Single-card uses one physical GPU; dual-card keeps preprocessing isolated on the second GPU. Single B uses test-only placement injection into the real Factory2 on the same card, not a production configuration change. Production isolation remains intact. ABBA order is A1/B1/B2/A2 per topology; sampling/concurrency follow the formal service protocol above.
+
+| Topology / visit | Phase | Frames/s | E2E p95 (s) | TTFA p95 (s) | C100 (%) | Caps |
+|---|---|---:|---:|---:|---:|---:|
+| single-A1 | cold | 368.0 | 4.181 | 2.6710 | 100.00 | 0 |
+| single-A1 | hot1 | 638.0 | 3.426 | 0.5322 | 100.00 | 0 |
+| single-A1 | hot2 | 564.9 | 3.257 | 0.4507 | 100.00 | 1 |
+| single-B1 | cold | 500.9 | 3.716 | 1.7331 | 100.00 | 0 |
+| single-B1 | hot1 | 654.4 | 2.885 | 0.5351 | 100.00 | 0 |
+| single-B1 | hot2 | 693.5 | 2.946 | 0.4542 | 100.00 | 0 |
+| single-B2 | cold | 505.5 | 4.066 | 1.4961 | 96.88 | 0 |
+| single-B2 | hot1 | NOT RUN | — | — | — | — |
+| single-B2 | hot2 | NOT RUN | — | — | — | — |
+| single-A2 | cold | 385.6 | 4.638 | 3.0961 | 100.00 | 1 |
+| single-A2 | hot1 | 612.3 | 3.375 | 0.5273 | 100.00 | 0 |
+| single-A2 | hot2 | 627.7 | 3.218 | 0.5200 | 100.00 | 0 |
+| dual-A1 | cold | 373.6 | 3.686 | 2.5081 | 100.00 | 0 |
+| dual-A1 | hot1 | 601.4 | 3.207 | 0.5303 | 100.00 | 0 |
+| dual-A1 | hot2 | 617.8 | 2.966 | 0.5227 | 100.00 | 0 |
+| dual-B1 | cold | 542.2 | 3.411 | 1.4374 | 100.00 | 0 |
+| dual-B1 | hot1 | 642.8 | 3.027 | 0.5326 | 100.00 | 0 |
+| dual-B1 | hot2 | 563.8 | 3.133 | 0.5178 | 100.00 | 0 |
+| dual-B2 | cold | 550.9 | 3.349 | 1.5622 | 100.00 | 0 |
+| dual-B2 | hot1 | 633.7 | 3.179 | 0.5235 | 100.00 | 0 |
+| dual-B2 | hot2 | 607.0 | 3.114 | 0.5159 | 100.00 | 0 |
+| dual-A2 | cold | 407.4 | 4.425 | 2.8764 | 100.00 | 1 |
+| dual-A2 | hot1 | 598.1 | 3.094 | 0.5253 | 100.00 | 0 |
+| dual-A2 | hot2 | 645.5 | 3.306 | 0.5000 | 100.00 | 0 |
+
+Single B1 passes its observed pair but does not generalize: **single-B2 cold C100=96.88% versus both A visits’ 100%**, triggering the stop after warmup+cold; B2 hot1/hot2 were **NOT RUN**, with no repeat rescue. Retained >100 ms underruns are `common_voice_en_17444666-common_voice_en_17444667` (**142.5 ms**) and `common_voice_en_17519982-common_voice_en_17519985` (**158.4 ms**). Every smaller nonzero underrun and cap ID is also retained in JSON; the prior full-corpus 18 underruns are unchanged.
+
+For every pair/phase below, throughput uses the −5% adverse guard, latency/TTFA +5%, C100 must not fall and errors/caps must not increase. Cold additionally improves throughput. No pooling or aggregate pass replaces an individual failure.
+
+| Pair / phase | Throughput Δ (%) | E2E p95 Δ (%) | TTFA p95 Δ (%) | Individual verdict |
+|---|---:|---:|---:|---|
+| single forward / cold | +36.1141 | -11.1217 | -35.1142 | Listed guards pass |
+| single forward / hot1 | +2.5705 | -15.7910 | +0.5449 | Listed guards pass |
+| single forward / hot2 | +22.7651 | -9.5487 | +0.7766 | Listed guards pass |
+| single reverse / cold | +31.0944 | -12.3329 | -51.6779 | FAIL: c100 |
+| dual forward / cold | +45.1285 | -7.4607 | -42.6897 | Listed guards pass |
+| dual forward / hot1 | +6.8839 | -5.6127 | +0.4337 | Listed guards pass |
+| dual forward / hot2 | -8.7407 | +5.6305 | -0.9374 | FAIL: throughput, e2e_p95 |
+| dual reverse / cold | +35.2234 | -24.3164 | -45.6891 | Listed guards pass |
+| dual reverse / hot1 | +5.9522 | +2.7473 | -0.3427 | Listed guards pass |
+| dual reverse / hot2 | -5.9644 | -5.8076 | +3.1800 | FAIL: throughput |
+
+All dual cells have C100=100%, but forward hot2 throughput **−8.7407%** and E2E p95 **+5.6305%** fail; reverse hot2 throughput **−5.9644%** also fails. Cold gains **+45.13%/+35.22%** do not cancel these failures. JSON also retains the frozen-stop-reference comparisons separately; their passing cells do not supersede reverse-pair failures. All candidate caps/errors are zero; three caps belong to single-A1 hot2, single-A2 cold and dual-A2 cold.
+
+### Physical reservation cost and limits
+
+Cold single-default A1/A2 delivers **368.06/385.64 frames/s per reserved GPU**, versus dual-candidate B1/B2 **271.17/275.50**: **-26.32%/-28.56%** normalized efficiency. Active-window GPU-seconds rise **13.18/13.73 → 18.25/18.30**, or **+38.44%/+33.34%**. Both reserved physical GPUs count throughout dual windows, even when preprocessing is idle. Request cohorts match but output frames differ stochastically (4,852/5,293 versus 4,949/5,042); use the per-frame metric, not a same-generated-work claim. Full compact costs for every executed phase, including warmups and hot passes, are in JSON.
+
+Power has only **5–14 samples per phase, ALL <20**. Integrated energy covers only first-to-last active samples: partial covered-time device energy, not exclusive application energy, full-window energy or an energy win. Thirty-second idle baselines exist raw; no idle adjustment is claimed. Completed service/whole elapsed accounting is **31.52/40.31 minutes**, from the original component-start budget with no deadline reset; the JSON separately preserves later summary-observation elapsed values. All eight cleanup records report exit 0, no forced shutdown, groups/descendants gone and samplers stopped.
+
+No new generated-audio quality run was performed. The original full-1,088 mixed-reference quality evidence remains valid in its separate regime; it does not override these new hot/continuity failures. Recommendation: **keep opt-in, make no optimal-strategy claim, and do not describe the current PR as production-ready with all guards satisfied**. No code fix is proposed here. PR-body/status decisions remain the coordinator’s responsibility; this update makes no GitHub change.
