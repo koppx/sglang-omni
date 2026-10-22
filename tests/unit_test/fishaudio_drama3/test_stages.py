@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
+from threading import Barrier, Event, Lock
 from typing import Literal
 
 import pytest
@@ -18,10 +21,15 @@ from sglang_omni.models.fishaudio_drama3.config import (
     Drama3VocoderFactoryArgs,
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
+from sglang_omni.models.fishaudio_drama3.reference_encode import (
+    DeviceEncode,
+    ReferenceEncodeOwner,
+)
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
 from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
 from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
+from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from tests.unit_test.fishaudio_drama3.test_prompt import (
     DEFAULT_SYSTEM_TURN,
     END,
@@ -158,6 +166,7 @@ def test_preprocessing_reads_the_checkpoint_and_loads_the_codec_on_cpu(
         max_prompt_rows=rows.shape[0],
         codec_path=str(tmp_path / "codec.pth"),
         reference_encode_dtype="float32",
+        reference_encode_cuda_streams=0,
         max_reference_audio_seconds=30.0,
     )
 
@@ -194,6 +203,7 @@ def test_a_bfloat16_reference_encode_on_the_cpu_is_refused(
             max_prompt_rows=64,
             codec_path=str(tmp_path / "codec.pth"),
             reference_encode_dtype="bfloat16",
+            reference_encode_cuda_streams=0,
             max_reference_audio_seconds=60.0,
         )
 
@@ -248,6 +258,7 @@ def test_preprocessing_warms_the_encoder_up_once_on_an_accelerator(
         max_prompt_rows=64,
         codec_path=str(tmp_path / "codec.pth"),
         reference_encode_dtype=reference_encode_dtype,
+        reference_encode_cuda_streams=0,
         max_reference_audio_seconds=60.0,
     )
 
@@ -484,3 +495,266 @@ def test_a_share_that_cannot_hold_one_longest_request_is_refused() -> None:
             total_gpu_memory_fraction=0.01,
             max_new_tokens=10**9,
         )
+
+
+class PreparedWaveformCodec:
+    sample_rate: int = 44100
+
+    def encode(
+        self, audios: torch.Tensor, audio_lengths: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        assert not torch.is_grad_enabled()
+        assert torch.is_autocast_enabled("cpu")
+        assert audios.shape == (1, self.sample_rate)
+        assert audio_lengths.tolist() == [self.sample_rate]
+        assert audios.max().item() == 1.0
+        assert audios.min().item() == 1.0
+        return torch.arange(20).reshape(1, 10, 2), audio_lengths
+
+
+def test_reference_preparation_preserves_device_context_and_output() -> None:
+    hook = FishReferenceEncodeHook(
+        codec=PreparedWaveformCodec(),
+        device="cpu",
+        checkpoint_id="codec",
+        autocast_dtype=torch.bfloat16,
+        max_reference_audio_seconds=1.0,
+    )
+    stereo_audio = torch.stack((torch.ones(22050), torch.full((22050,), 3.0)))
+    codes = hook.encode_reference_waveform(stereo_audio, 22050)
+    assert codes.device.type == "cpu"
+    assert torch.equal(codes, torch.arange(20).reshape(10, 2))
+    with pytest.raises(ValueError, match="longer than"):
+        hook.encode_reference_waveform(torch.ones(2, 22051), 22050)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_two_stream_factory_rejects_unsupported_device_or_precision_before_loading(
+    codec_loads: CodecLoads,
+    device: str,
+) -> None:
+    with pytest.raises(ValueError, match="requires CUDA and bfloat16"):
+        stages.create_preprocessing_executor(
+            "unused-checkpoint",
+            device=device,
+            gpu_id=0,
+            max_concurrency=2,
+            max_prompt_rows=64,
+            codec_path="unused-codec",
+            reference_encode_dtype="float32",
+            reference_encode_cuda_streams=2,
+            max_reference_audio_seconds=60.0,
+        )
+    assert codec_loads.calls == []
+
+
+class CPUOnlyStream:
+    def __init__(self, device: torch.device) -> None:
+        assert device == torch.device("cuda:0")
+
+    def synchronize(self) -> None:
+        pass
+
+
+@pytest.fixture
+def cpu_cuda_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    def set_device(device: torch.device) -> None:
+        assert device == torch.device("cuda:0")
+
+    def device_context(device: torch.device) -> nullcontext[None]:
+        assert device == torch.device("cuda:0")
+        return nullcontext()
+
+    def stream_context(stream: CPUOnlyStream) -> nullcontext[None]:
+        assert isinstance(stream, CPUOnlyStream)
+        return nullcontext()
+
+    def autocast_context(
+        device_type: str,
+        *,
+        enabled: bool = True,
+        dtype: torch.dtype | None = None,
+        cache_enabled: bool = True,
+    ) -> nullcontext[None]:
+        assert device_type == "cuda"
+        return nullcontext()
+
+    monkeypatch.setattr(torch.cuda, "set_device", set_device)
+    monkeypatch.setattr(torch.cuda, "synchronize", set_device)
+    monkeypatch.setattr(torch.cuda, "Stream", CPUOnlyStream)
+    monkeypatch.setattr(torch.cuda, "device", device_context)
+    monkeypatch.setattr(torch.cuda, "stream", stream_context)
+    monkeypatch.setattr(torch, "autocast", autocast_context)
+
+
+class FoldableCPUCodec(torch.nn.Module):
+    sample_rate: int = 44100
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.folded = False
+        self.eval()
+
+    def fold_weight_norm(self) -> None:
+        self.folded = True
+
+
+def test_factory_warmup_failure_closes_and_drains_real_owner(
+    cpu_cuda_boundary: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed startup must not leak the other stream's in-flight warmup."""
+    write_toy_checkpoint(tmp_path)
+    codec = FoldableCPUCodec()
+    both_workers = Barrier(2)
+    slow_worker_entered = Event()
+    release_worker = Event()
+    failed_worker = Event()
+    owners: list[ReferenceEncodeOwner] = []
+    lock = Lock()
+    calls = 0
+
+    def encode_prepared(
+        hook: stages.Drama3ReferenceEncodeHook,
+        audios: torch.Tensor,
+        audio_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        nonlocal calls
+        with lock:
+            calls += 1
+            call_number = calls
+        both_workers.wait(timeout=5)
+        if call_number == 1:
+            failed_worker.set()
+            raise ValueError("warmup failed")
+        else:
+            slow_worker_entered.set()
+            assert release_worker.wait(5)
+            return torch.zeros(10, 1, dtype=torch.long)
+
+    def create_owner(
+        device: torch.device, device_encode: DeviceEncode
+    ) -> ReferenceEncodeOwner:
+        owner = ReferenceEncodeOwner(device, device_encode)
+        owners.append(owner)
+        return owner
+
+    def load_codec(checkpoint_dir: str, device: str) -> FoldableCPUCodec:
+        assert device == "cuda:0"
+        return codec
+
+    def create_factory() -> stages.ThreadedSimpleScheduler:
+        return stages.create_preprocessing_executor(
+            str(tmp_path / "checkpoint"),
+            device="cuda",
+            gpu_id=0,
+            max_concurrency=2,
+            max_prompt_rows=64,
+            codec_path=str(tmp_path / "codec.pth"),
+            reference_encode_dtype="bfloat16",
+            reference_encode_cuda_streams=2,
+            max_reference_audio_seconds=60.0,
+        )
+
+    monkeypatch.setattr(stages, "load_codec", load_codec)
+    monkeypatch.setattr(stages, "ReferenceEncodeOwner", create_owner)
+    monkeypatch.setattr(
+        stages.Drama3ReferenceEncodeHook, "encode_prepared", encode_prepared
+    )
+    with ThreadPoolExecutor(max_workers=1) as caller:
+        result = caller.submit(create_factory)
+        try:
+            assert slow_worker_entered.wait(5)
+            assert failed_worker.wait(5)
+            assert not result.done()
+        finally:
+            release_worker.set()
+        with pytest.raises(ValueError, match="warmup failed"):
+            result.result(timeout=5)
+    assert codec.folded
+    assert owners[0].is_closed
+    assert owners[0].outstanding_jobs == 0
+    with pytest.raises(RuntimeError, match="closed"):
+        owners[0].encode(torch.zeros(1), torch.ones(1), duration_seconds=1)
+
+
+class LifecyclePreprocessor:
+    def __init__(self, hook: stages.Drama3ReferenceEncodeHook) -> None:
+        self.reference_encoder = ReferenceEncodeService(hook)
+
+    def __call__(self, audio: torch.Tensor) -> torch.Tensor:
+        return self.reference_encoder.hook.encode_prepared_waveform(
+            audio, torch.tensor([1])
+        )
+
+
+def test_scheduler_stop_cancels_pending_before_closing_and_drains_running_owner(
+    cpu_cuda_boundary: None,
+) -> None:
+    """Stopping intake cancels queued preprocessing and waits for active GPU work."""
+    entered = Event()
+    release = Event()
+    close_entered = Event()
+    pending: Future[torch.Tensor]
+
+    def encode(audios: torch.Tensor, audio_lengths: torch.Tensor) -> torch.Tensor:
+        entered.set()
+        assert release.wait(5)
+        return audios.long()
+
+    class ObservedHook(stages.Drama3ReferenceEncodeHook):
+        def close(self) -> None:
+            assert pending.cancelled()
+            close_entered.set()
+            super().close()
+
+    hook = ObservedHook(codec=PreparedWaveformCodec(), checkpoint_id="codec")
+    hook.owner = ReferenceEncodeOwner(torch.device("cuda:0"), encode)
+    scheduler = stages.Drama3PreprocessingScheduler(
+        LifecyclePreprocessor(hook), max_concurrency=1
+    )
+    running = scheduler.executor.submit(scheduler.run_one, torch.ones(1, 1))
+    assert entered.wait(5)
+    pending = scheduler.executor.submit(scheduler.run_one, torch.ones(1, 1))
+    with ThreadPoolExecutor(max_workers=1) as closer:
+        stopped = closer.submit(scheduler.stop)
+        try:
+            assert close_entered.wait(5)
+            assert not stopped.done()
+            assert not running.done()
+        finally:
+            release.set()
+        stopped.result(timeout=5)
+    assert torch.equal(running.result(timeout=5), torch.ones(1, 1, dtype=torch.long))
+    assert hook.owner.is_closed
+    scheduler.stop()
+    scheduler.executor.shutdown(wait=True)
+
+
+def test_scheduler_start_finally_closes_service_when_dispatch_fails(
+    cpu_cuda_boundary: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scheduler loop exception must close its reference owner, not just its CPU pool."""
+    hook = stages.Drama3ReferenceEncodeHook(
+        codec=PreparedWaveformCodec(), checkpoint_id="codec"
+    )
+
+    def encode(audios: torch.Tensor, audio_lengths: torch.Tensor) -> torch.Tensor:
+        return audios.long()
+
+    hook.owner = ReferenceEncodeOwner(torch.device("cuda:0"), encode)
+    scheduler = stages.Drama3PreprocessingScheduler(
+        LifecyclePreprocessor(hook), max_concurrency=1
+    )
+
+    def fail_start() -> None:
+        raise ValueError("dispatch failed")
+
+    monkeypatch.setattr(scheduler, "wait_for_capacity", fail_start)
+    with pytest.raises(ValueError, match="dispatch failed"):
+        scheduler.start()
+    assert hook.owner.is_closed
+    with pytest.raises(RuntimeError, match="shutdown"):
+        scheduler.executor.submit(encode, torch.ones(1), torch.ones(1))

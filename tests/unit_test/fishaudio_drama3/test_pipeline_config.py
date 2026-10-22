@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.placement import StagePlacementPlanner
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_CODEC_PATH,
@@ -58,6 +59,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "gpu_id": 0,
         "max_concurrency": 8,
         "reference_encode_dtype": "bfloat16",
+        "reference_encode_cuda_streams": 0,
         "max_reference_audio_seconds": 60.0,
         "max_prompt_rows": 8192,
         "codec_path": DEFAULT_CODEC_PATH,
@@ -105,6 +107,7 @@ def test_preprocessing_follows_the_engine_cap_and_the_vocoder_codec() -> None:
         "gpu_id": 0,
         "max_concurrency": 8,
         "reference_encode_dtype": "bfloat16",
+        "reference_encode_cuda_streams": 0,
         "max_reference_audio_seconds": 60.0,
         "max_prompt_rows": 4096,
         "codec_path": "local/codec.pth",
@@ -245,3 +248,46 @@ def test_speech_fields_the_model_cannot_honor_are_refused(
         speech_validator().parse_raw_request({"input": "hello", field_name: value})
 
     assert rejection.value.param == field_name
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        ("preprocessing.gpu", "0"),
+        ("preprocessing.factory.device", "cpu"),
+        ("preprocessing.factory.reference_encode_dtype", "float32"),
+        ("preprocessing.process", "pipeline"),
+        ("preprocessing.tp_size", "2"),
+        ("processes.preprocessing.num_replicas", "2"),
+    ],
+)
+def test_two_stream_encoding_rejects_unsafe_deployments(
+    override: tuple[str, str],
+) -> None:
+    manager = ConfigManager(Drama3PipelineConfig(model_path="checkpoint"))
+    with pytest.raises(ValueError):
+        manager.merge_config(
+            [
+                ("preprocessing.gpu", "1"),
+                ("preprocessing.factory.reference_encode_cuda_streams", "2"),
+                override,
+            ]
+        )
+
+
+def test_two_stream_launch_and_final_replica_placement_are_validated() -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [
+            ("preprocessing.gpu", "1"),
+            ("preprocessing.factory.reference_encode_cuda_streams", "2"),
+        ]
+    )
+    assert launch_kwargs(config, "preprocessing")["reference_encode_cuda_streams"] == 2
+    stages = [stage.model_copy(deep=True) for stage in config.stages]
+    replica = stages[1].model_copy(update={"name": "tts_engine@r1", "gpu": 1})
+    stages.append(replica)
+    with pytest.raises(ValueError, match="isolated preprocessing GPU"):
+        StagePlacementPlanner(config).build(
+            stages_cfg=stages,
+            replica_instances={"tts_engine": ("tts_engine", "tts_engine@r1")},
+        )
