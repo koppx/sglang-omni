@@ -29,7 +29,20 @@ The original 5% first-audio requirement did not specify a statistic. Mean first 
 
 Main-integrated arrival C50/C100 improve in both rounds. Earlier publication-tree experiments had an arrival continuity regression despite faster first audio; that historical result remains a limitation rather than being transferred to this configuration.
 
-In the first C128 capacity experiment, all four boots have 128 valid multi-chunk requests, no N/A values and C50/C100=0. Maximum playback-underrun p50/p95/p99 seconds are A1 0.6689/0.7253/0.8127, A2 0.7007/0.7419/0.7991, B1 0.2954/0.3322/0.4298 and B2 0.3281/0.3512/0.3558. The candidate improves this distribution, but neither arm meets continuous-playback requirements at this load. C128 smooth playback and sustained arrival capacity are not validated. Additional capacity repetitions are tracked separately and must not be inferred from this first experiment.
+In the first C128 capacity experiment, all four boots have 128 valid multi-chunk requests, no N/A values and C50/C100=0. Maximum playback-underrun p50/p95/p99 seconds are A1 0.6689/0.7253/0.8127, A2 0.7007/0.7419/0.7991, B1 0.2954/0.3322/0.4298 and B2 0.3281/0.3512/0.3558. The candidate improves this distribution, but neither arm meets continuous-playback requirements at this load. C128 smooth playback and sustained arrival capacity are not validated. Two additional independent capacity ABBA experiments completed on the review runtime, with identical settings and 2,048 additional measured outputs. All outputs have valid full-target WER/UTMOS and verified waveform hashes; no HTTP failures occurred. One round-2 C64 length cap remains included. All C128 boots still have C50/C100=0.
+
+The three capacity experiments use two fresh boots per arm each; they are three independent ABBA experiments, not six independent experiments. The first retains its original baseline/candidate versions; rounds 2 and 3 use main 694461c2b and the review runtime 2d6ee725c. Local dependency placement is identical between arms in the follow-up runs, but differs from the earlier shared-filesystem placement, so rounds are reported separately.
+
+| Workload | Round | Mean E2E change | Audio throughput change | Mean RTF change | WER A → B | UTMOS A → B |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| C64 | 1 | -14.16% | +15.18% | -15.25% | 1.0981% → 0.5857% | 3.8724 → 3.8858 |
+| C64 | 2 | -11.42% | +24.72% | -12.09% | 1.0249% → 0.8785% | 3.8707 → 3.8860 |
+| C64 | 3 | -9.77% | +19.85% | -10.12% | 1.2079% → 0.8419% | 3.8693 → 3.8726 |
+| C128 | 1 | -19.59% | +21.90% | -18.52% | 0.6589% → 0.8053% | 3.8769 → 3.8893 |
+| C128 | 2 | -30.10% | +34.10% | -30.37% | 0.8053% → 1.0981% | 3.8670 → 3.8773 |
+| C128 | 3 | -17.32% | +18.61% | -16.58% | 0.9517% → 0.8419% | 3.8770 → 3.8598 |
+
+The capacity gains repeat in direction, while quality changes remain mixed. C128 round-3 mean first audio increases 0.92% despite faster completion. No additional quality noninferiority claim follows from these measurements. Service shutdown exits zero and GPU process checks clear, but Python resource_tracker reports leaked-semaphore cleanup warnings in both arms; these warnings remain recorded and are not described as warning-free teardown.
 
 ## Full-output quality
 
