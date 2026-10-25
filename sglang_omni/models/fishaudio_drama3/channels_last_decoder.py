@@ -175,7 +175,11 @@ class ChannelsLastDecoder:
             frame_count = original_frame_count
             padded = hidden_states
         return channels_last_conv1d(
-            padded, module.conv, self.conv_weights[id(module.conv)], frame_count
+            padded,
+            module.conv,
+            self.conv_weights[id(module.conv)],
+            module.conv.bias,
+            frame_count,
         )
 
     def causal_transposed_conv(
