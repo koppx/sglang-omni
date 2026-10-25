@@ -283,8 +283,21 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
             )
         else:
             pass
-        audio = self.stateful_decoder.decode_delta(
-            codes, decoder_state, is_final=is_final
+        max_frame_count = (
+            self.stateful_decoder.backend.max_frame_count
+            if isinstance(self.stateful_decoder, StatefulGraphDecoder)
+            else self.stateful_decoder.max_frame_count
+        )
+        audio_parts = [
+            self.stateful_decoder.decode_delta(
+                codes[..., start : start + max_frame_count],
+                decoder_state,
+                is_final=is_final and start + max_frame_count >= codes.shape[-1],
+            )
+            for start in range(0, codes.shape[-1], max_frame_count)
+        ]
+        audio = (
+            audio_parts[0] if len(audio_parts) == 1 else torch.cat(audio_parts, dim=-1)
         )
         audio_chunk = build_audio_chunk_payload(
             audio[0, 0], sample_rate=self.codec.sample_rate

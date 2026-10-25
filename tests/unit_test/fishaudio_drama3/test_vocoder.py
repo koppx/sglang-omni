@@ -872,6 +872,38 @@ def test_stateful_native_scheduler_matches_full_codec(
     assert messages[-1].data.data["usage"]["completion_tokens"] == frame_count
 
 
+@pytest.mark.parametrize(
+    "first_frames,ramp_frames,followup_frames",
+    [(65, (10,), 64), (10, (65,), 64), (10, (10,), 128)],
+)
+def test_stateful_large_windows_preserve_audio_and_chunk_boundaries(
+    first_frames: int, ramp_frames: tuple[int, ...], followup_frames: int
+) -> None:
+    """Configured windows above 64 frames must not exceed the decoder delta limit."""
+    vocoder = stateful_vocoder()
+    vocoder.stream_stride = first_frames
+    vocoder.stream_followup_stride_ramp = ramp_frames
+    vocoder.stream_followup_stride = followup_frames
+    frames = random_codec_frames(210)
+    with torch.no_grad():
+        expected = vocoder.codec.from_indices(frames[:, 1:].T[None].clone())[0, 0]
+    native_stream_chunk(vocoder, "request-a", frames)
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("request-a")
+    messages = drained(vocoder)
+    np.testing.assert_allclose(
+        streamed_audio(messages), expected.numpy(), atol=1e-4, rtol=1e-4
+    )
+    chunks = [message for message in messages if message.type == "stream"]
+    assert (
+        len(chunks[0].data["audio_waveform"])
+        == first_frames * vocoder.codec.frame_length * 4
+    )
+    assert vocoder.request_slots == {}
+
+
 def test_stateful_capacity_lag_abort_interleave_and_slot_reuse() -> None:
     vocoder = stateful_vocoder(capacity=1)
     frames = random_codec_frames(20)

@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """CPU equivalence checks against a small production Fish codec."""
 
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -479,3 +483,45 @@ def test_negative_code_lookup_discards_failed_lease(codec: DAC) -> None:
     actual = decoder.decode_delta(codes, state, is_final=True)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
     assert state.batch_size == 1
+
+
+def test_stateful_codec_import_and_cpu_decode_without_triton() -> None:
+    """Optional stateful imports must not prevent CPU decoding without Triton."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                """
+            import builtins
+            import torch
+            from sglang_omni.platforms import current_platform
+            original_import = builtins.__import__
+            def without_triton(name, *args, **kwargs):
+                if name == "triton" or name.startswith("triton."):
+                    raise ModuleNotFoundError(name, name=name)
+                else:
+                    return original_import(name, *args, **kwargs)
+            builtins.__import__ = without_triton
+            import torch
+            from sglang_omni.models.fishaudio_drama3 import stateful_waveform
+            from sglang_omni.models.fishaudio_drama3.stateful_decoder import StatefulDACDecoder
+            from tests.unit_test.fixtures.fishaudio_codec import tiny_fishaudio_codec
+            assert stateful_waveform.triton is None
+            codec = tiny_fishaudio_codec()
+            decoder = StatefulDACDecoder(codec, capacity=1)
+            state = decoder.create_state()
+            codes = torch.zeros((1, decoder.num_codebooks, 3), dtype=torch.long)
+            audio = decoder.decode_delta(codes, state, is_final=True)
+            assert audio.shape[-1] == 3 * codec.frame_length
+            assert torch.isfinite(audio).all()
+            decoder.release_state(state)
+        """
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[3],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

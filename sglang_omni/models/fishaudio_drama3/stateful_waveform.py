@@ -4,11 +4,8 @@
 from __future__ import annotations
 
 import torch
-import triton
-import triton.language as tl
 from torch import nn
 from torch.nn import functional as F
-from triton.language.extra import libdevice
 
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
@@ -19,45 +16,58 @@ from sglang_omni.utils.channels_last_conv import (
     channels_last_conv_transpose1d,
 )
 
+try:
+    import triton
+    import triton.language as tl
+    from triton.language.extra import libdevice
+except ImportError:
+    triton = None
+    tl = None
+    libdevice = None
 
-@triton.jit
-def snake_history_kernel(
-    hidden_states,
-    alpha,
-    inverse_alpha,
-    history,
-    slot_index,
-    padded,
-    frame_count: tl.constexpr,
-    channel_count: tl.constexpr,
-    context_frame_count: tl.constexpr,
-    padded_frame_count: tl.constexpr,
-    BLOCK: tl.constexpr,
-):
-    offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-    channel = offsets % channel_count
-    frame = offsets // channel_count
-    slot = tl.load(slot_index)
-    source_frame = frame - context_frame_count
-    valid_source = (source_frame >= 0) & (source_frame < frame_count)
-    values = tl.load(
-        hidden_states + source_frame * channel_count + channel,
-        mask=valid_source & (frame < padded_frame_count),
-        other=0,
-    ).to(tl.float32)
-    scales = tl.load(alpha + channel)
-    inverses = tl.load(inverse_alpha + channel)
-    sine = libdevice.sin(scales * values)
-    activated = values + inverses * sine * sine
-    previous = tl.load(
-        history + (slot * channel_count + channel) * context_frame_count + frame,
-        mask=frame < context_frame_count,
-        other=0,
-    )
-    result = tl.where(
-        frame < context_frame_count, previous, tl.where(valid_source, activated, 0)
-    )
-    tl.store(padded + offsets, result, mask=frame < padded_frame_count)
+if triton is not None:
+
+    @triton.jit
+    def snake_history_kernel(
+        hidden_states,
+        alpha,
+        inverse_alpha,
+        history,
+        slot_index,
+        padded,
+        frame_count: tl.constexpr,
+        channel_count: tl.constexpr,
+        context_frame_count: tl.constexpr,
+        padded_frame_count: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        channel = offsets % channel_count
+        frame = offsets // channel_count
+        slot = tl.load(slot_index)
+        source_frame = frame - context_frame_count
+        valid_source = (source_frame >= 0) & (source_frame < frame_count)
+        values = tl.load(
+            hidden_states + source_frame * channel_count + channel,
+            mask=valid_source & (frame < padded_frame_count),
+            other=0,
+        ).to(tl.float32)
+        scales = tl.load(alpha + channel)
+        inverses = tl.load(inverse_alpha + channel)
+        sine = libdevice.sin(scales * values)
+        activated = values + inverses * sine * sine
+        previous = tl.load(
+            history + (slot * channel_count + channel) * context_frame_count + frame,
+            mask=frame < context_frame_count,
+            other=0,
+        )
+        result = tl.where(
+            frame < context_frame_count, previous, tl.where(valid_source, activated, 0)
+        )
+        tl.store(padded + offsets, result, mask=frame < padded_frame_count)
+
+else:
+    pass
 
 
 class StatefulWaveformDecoder:
@@ -68,6 +78,10 @@ class StatefulWaveformDecoder:
         *,
         fuse_snake_history: bool = False,
     ) -> None:
+        if fuse_snake_history and triton is None:
+            raise ValueError("Snake/history fusion requires Triton")
+        else:
+            pass
         self.decoder = decoder
         self.arena = arena
         self.fuse_snake_history = fuse_snake_history
@@ -104,7 +118,8 @@ class StatefulWaveformDecoder:
                 hidden_states,
                 convolution,
                 self.decoder.conv_weights[id(convolution)],
-                frame_count,
+                bias=convolution.bias,
+                length=frame_count,
             )
         elif module_name == "CausalTransConvNet":
             convolution = module.conv
@@ -200,7 +215,8 @@ class StatefulWaveformDecoder:
                         padded,
                         convolution,
                         self.decoder.conv_weights[id(convolution)],
-                        frame_count,
+                        bias=convolution.bias,
+                        length=frame_count,
                     )
                     child_index += 2
                 else:
