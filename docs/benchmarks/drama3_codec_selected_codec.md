@@ -81,3 +81,21 @@ python -m sglang_omni.cli serve --model-path "$DRAMA3_CHECKPOINT" \
 ```
 
 Use benchmarks.eval.benchmark_tts_seedtts with --use-existing-server --generate-only --stream --collect-stream-outcomes and a fixed metadata list, retaining every output and cap. Score all outputs with the same pinned ASR and UTMOS assets. Private audio, target text and machine-specific paths are not published. Human review and acceptance of the documented quality/latency tradeoffs remain required; default-off is not a substitute for quality acceptance.
+
+## Portable identical-code reproduction
+
+Save an integer NumPy array shaped [codebooks, frames], with no semantic text-token column. Supply the codec checkpoint and choose a fresh output directory:
+
+```bash
+python -m benchmarks.eval.benchmark_drama3_codec \
+  --codec-path "$CODEC_CHECKPOINT" \
+  --codes "$CODES_NPY" \
+  --output-dir "$RESULT_DIR" \
+  --device cuda:0
+```
+
+The command writes finite-window, all-enabled stateful graph and native whole waveforms, input/output hashes, source fingerprints, exact frame partitions, length checks and numerical differences. It enforces the unchanged 0.02 candidate/native tolerance and retains failure status. It never overwrites an existing output directory. A synthetic array can exercise the numerical path, but its audio has no intelligibility reference; use actual codec codes and their corresponding full transcript for WER. This component command is neither an E2E benchmark nor a quality noninferiority test. Service throughput and continuity must still be measured with the existing SeedTTS benchmark under matched deployment conditions.
+
+## Sampling attribution boundary
+
+The existing Triton sampler uses a process seed together with a global decode-step counter, batch row and draw-stream ID. A request occupying a different row or global step can therefore receive different random draws even with identical logits. A fixed-logit diagnostic using the production sampler reproduced exact output for unchanged seed/step/row, but changed 32/32 tokens after row remapping and 29/32 after changing the step in one synthetic cohort. This demonstrates the mechanism, not the cause of the historical service WER difference. It does not justify adding a new sampling policy to this codec PR, treating per-request seeds as an equality guarantee, or discarding unfavorable service generations.
