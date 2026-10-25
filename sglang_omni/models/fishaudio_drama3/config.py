@@ -279,6 +279,11 @@ class Drama3PipelineConfig(PipelineConfig):
         else:
             return {}
 
+    def abort_cleanup_stages(self) -> tuple[str, ...]:
+        vocoder_factory = self.stage_named("vocoder").factory
+        assert isinstance(vocoder_factory, Drama3VocoderFactoryArgs)
+        return ("vocoder",) if vocoder_factory.stateful_decode else ()
+
     def supports_uploaded_voice_references(self) -> bool:
         return True
 

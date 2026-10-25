@@ -144,6 +144,7 @@ def test_partial_failure_retains_lease_until_owner_cleanup(codec: DAC) -> None:
 
 @torch.no_grad()
 def test_channels_last_incremental_history_and_unbiased_carry(codec: DAC) -> None:
+    pytest.importorskip("triton")
     backend = StatefulDACDecoder(codec, capacity=1)
     decoder = StatefulWaveformDecoder(
         ChannelsLastDecoder(codec, dtype=torch.float32), backend.arena

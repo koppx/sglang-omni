@@ -730,6 +730,11 @@ class MultiProcessPipelineRunner:
                 session_graph=session_graph,
                 max_output_lead_ms=self.config.max_output_lead_ms,
             )
+            self._coordinator.abort_cleanup_stages = (
+                frozenset(  # noqa: leading-underscore - existing coordinator owner
+                    self.config.abort_cleanup_stages()
+                )
+            )
             logger.info(
                 f"Coordinator stream backlog cap: "
                 f"max_total_backlog_bytes={stream_delivery.max_total_backlog_bytes}"

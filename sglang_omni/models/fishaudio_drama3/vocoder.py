@@ -262,6 +262,17 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
             first_frame_index = end_frame_index
         return messages
 
+    def abort_state(self, request_id: str) -> None:
+        with self.state_lock:
+            super().abort_state(request_id)
+
+    def handle_stream_chunk(self, request_id: str, item: object) -> None:
+        with self.state_lock:
+            if self.stateful_decoder is not None and self.is_aborted(request_id):
+                return
+            else:
+                super().handle_stream_chunk(request_id, item)
+
     def decode_stream_delta(
         self, request_id: str, *, is_final: bool
     ) -> dict[str, bytes | list[int] | str | int] | None:
@@ -366,6 +377,16 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
 
     def validate_non_streaming_payload(self, payload: StagePayload) -> None:
         generation_result_of(payload)
+
+    def complete_stream_request(
+        self, request_id: str, messages: list[OutgoingMessage]
+    ) -> None:
+        with self.state_lock:
+            if self.stateful_decoder is not None:
+                self.clear_stream_state(request_id)
+            else:
+                pass
+            super().complete_stream_request(request_id, messages)
 
     def clear_stream_state(self, request_id: str) -> None:
         if request_id in self.request_slots:

@@ -15,6 +15,7 @@ import torch
 import sglang_omni.platforms as platforms
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataRef, TransportKind
+from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage import runtime as stage_runtime_module
 from sglang_omni.pipeline.stage.input import AggregatedInput
@@ -27,6 +28,7 @@ from sglang_omni.proto import (
     StagePayload,
     SubmitMessage,
 )
+from sglang_omni.proto.messages import AbortMessage
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
     SessionIdentity,
@@ -1874,5 +1876,58 @@ def test_session_route_rejects_a_stream_edge_off_the_route() -> None:
         )
         assert [msg.success for msg in control_plane.completions] == [False]
         assert "linear payload edges" in control_plane.completions[0].error
+
+    asyncio.run(run())
+
+
+def test_abort_confirmation_follows_scheduler_cleanup() -> None:
+    """An abort confirmation must not precede scheduler resource cleanup."""
+
+    async def run() -> None:
+        control = RecordingStageControlPlane()
+        scheduler = FakeScheduler()
+        stage_obj = make_stage(
+            name="vocoder", scheduler=scheduler, control_plane=control
+        )
+        stage_obj.running = True
+        original_abort = scheduler.abort
+
+        def cleanup(request_id: str) -> None:
+            assert control.completions == []
+            original_abort(request_id)
+            stage_obj.running = False
+
+        scheduler.abort = cleanup
+        message = AbortMessage("old", cleanup_token="generation-1")
+        await control.abort_inbox.put(deserialize_message(serialize_message(message)))
+        await stage_obj.abort_listener()
+        assert scheduler.aborted == ["old"]
+        assert len(control.completions) == 1
+        confirmation = deserialize_message(serialize_message(control.completions[0]))
+        assert confirmation.cleanup_token == "generation-1"
+        assert confirmation.from_stage == "vocoder"
+
+    asyncio.run(run())
+
+
+def test_failed_abort_cleanup_never_confirms_release() -> None:
+    """A failed scheduler cleanup must leave the admission owner unconfirmed."""
+
+    async def run() -> None:
+        control = RecordingStageControlPlane()
+        scheduler = FakeScheduler()
+        stage_obj = make_stage(
+            name="vocoder", scheduler=scheduler, control_plane=control
+        )
+        stage_obj.running = True
+
+        def fail_cleanup(request_id: str) -> None:
+            raise RuntimeError(f"cleanup failed for {request_id}")
+
+        scheduler.abort = fail_cleanup
+        await control.abort_inbox.put(AbortMessage("old", cleanup_token="generation-1"))
+        await stage_obj.abort_listener()
+        assert control.completions == []
+        assert "old" in stage_obj.aborted
 
     asyncio.run(run())

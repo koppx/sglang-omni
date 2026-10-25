@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,6 +12,7 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
     snake_channels_last_kernel,
@@ -31,12 +33,15 @@ from sglang_omni.models.fishaudio_drama3.vocoder import (
     WindowGraphDecoder,
 )
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
+from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.proto.messages import CompleteMessage
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
 from tests.unit_test.fixtures.fishaudio_codec import tiny_fishaudio_codec
+from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
 SAMPLES_PER_FRAME = 4
 SAMPLE_RATE = 44100
@@ -1006,3 +1011,73 @@ def test_stateful_option_preserves_nonstream_full_decode() -> None:
         result.data["audio_data"], expected.numpy(), atol=0, rtol=0
     )
     assert not vocoder.request_slots
+
+
+def test_cancelled_slot_cleanup_precedes_replacement_admission() -> None:
+    """Delayed cancellation cannot admit a replacement into a still-owned slot."""
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["vocoder"],
+            max_in_flight=1,
+            abort_cleanup_stages=("vocoder",),
+        )
+        control = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        vocoder = stateful_vocoder(capacity=1)
+        frames = random_codec_frames(20)
+        await coordinator.submit_request("old", "original")
+        native_stream_chunk(vocoder, "old", frames[:10])
+        assert len(vocoder.request_slots) == 1
+        await coordinator.abort("old")
+        confirmation_token = control.aborts[-1].cleanup_token
+        assert confirmation_token is not None
+        with pytest.raises(QueueFullError):
+            await coordinator.submit_request("new", "replacement")
+        assert "old" in vocoder.request_slots
+        vocoder.abort("old")
+        native_stream_chunk(vocoder, "old", frames[:10])
+        assert vocoder.request_slots == {}
+        confirmation = CompleteMessage(
+            "old", "vocoder", True, cleanup_token=confirmation_token
+        )
+        await coordinator.handle_completion(confirmation)
+        await coordinator.handle_completion(confirmation)
+        await coordinator.submit_request("new", "replacement")
+        native_stream_chunk(vocoder, "new", frames)
+        vocoder.handle_streaming_new_request(
+            "new", final_payload(frames, is_streaming=True)
+        )
+        vocoder.handle_stream_done("new")
+        assert vocoder.request_slots == {}
+        assert streamed_audio(drained(vocoder)).size > 0
+        await coordinator.handle_completion(CompleteMessage("new", "vocoder", True))
+        assert coordinator.requests == {}
+
+    asyncio.run(run())
+
+
+def test_stateful_terminal_output_follows_slot_release() -> None:
+    """Terminal output must not become visible while its codec slot is owned."""
+    vocoder = stateful_vocoder(capacity=1)
+    frames = random_codec_frames(20)
+    native_stream_chunk(vocoder, "old", frames)
+    original_put = vocoder.outbox.put
+
+    def record_output(message: OutgoingMessage) -> None:
+        if message.type == "result":
+            assert vocoder.request_slots == {}
+        else:
+            pass
+        original_put(message)
+
+    vocoder.outbox.put = record_output
+    vocoder.handle_streaming_new_request(
+        "old", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("old")
+    assert any(message.type == "result" for message in drained(vocoder))

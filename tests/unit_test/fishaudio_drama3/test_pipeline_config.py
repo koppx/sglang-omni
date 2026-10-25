@@ -347,3 +347,16 @@ def test_unsupported_stateful_configuration_rejected(
         ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
             override
         )
+
+
+def test_abort_cleanup_confirmation_is_enabled_only_for_stateful_codec() -> None:
+    config = Drama3PipelineConfig(model_path="checkpoint")
+    assert config.abort_cleanup_stages() == ()
+    stateful = ConfigManager(config).merge_config(
+        [
+            ("vocoder.factory.stateful_decode", "true"),
+            ("tts_engine.engine.max_running_requests", "1"),
+            ("tts_engine.engine.max_queued_requests", "0"),
+        ]
+    )
+    assert stateful.abort_cleanup_stages() == ("vocoder",)

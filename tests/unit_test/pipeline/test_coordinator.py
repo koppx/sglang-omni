@@ -1760,3 +1760,219 @@ def test_last_terminal_waveform_over_the_cap_fails_its_own_stream(
         assert coordinator.stream_queues == {}
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_cleanup_ack_retains_admission_until_resource_release(failed: bool) -> None:
+    """A sent abort cannot admit replacement work before stage cleanup completes."""
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["vocoder"],
+            max_in_flight=1,
+            abort_cleanup_stages=("vocoder",),
+        )
+        control = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.submit_request("old", "original")
+        if failed:
+            await coordinator.handle_completion(
+                CompleteMessage("old", "vocoder", False, error="failed")
+            )
+        else:
+            assert await coordinator.abort("old")
+        token = control.aborts[-1].cleanup_token
+        assert token is not None
+        with pytest.raises(QueueFullError):
+            await coordinator.submit_request("new", "replacement")
+        await coordinator.handle_completion(CompleteMessage("old", "vocoder", True))
+        assert "old" in coordinator.requests
+        await coordinator.handle_completion(
+            CompleteMessage("old", "vocoder", True, cleanup_token="stale")
+        )
+        assert "old" in coordinator.requests
+        await coordinator.handle_completion(
+            CompleteMessage("old", "vocoder", True, cleanup_token=token)
+        )
+        assert "old" not in coordinator.requests
+        await coordinator.submit_request("new", "replacement")
+        await coordinator.handle_completion(
+            CompleteMessage("old", "vocoder", True, cleanup_token=token)
+        )
+        assert "new" in coordinator.requests
+        future = coordinator.completion_futures.get("old")
+        if future is not None and future.done() and not future.cancelled():
+            future.exception()
+        else:
+            pass
+        await coordinator.handle_completion(
+            CompleteMessage("new", "vocoder", True, result="ok")
+        )
+        assert "new" not in coordinator.requests
+
+    asyncio.run(run())
+
+
+def test_cleanup_confirmation_cannot_release_reused_request_id() -> None:
+    """A delayed old confirmation cannot retire a new cancellation generation."""
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["vocoder"],
+            max_in_flight=1,
+            abort_cleanup_stages=("vocoder",),
+        )
+        control = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.submit_request("same", "first")
+        await coordinator.abort("same")
+        old_token = control.aborts[-1].cleanup_token
+        await coordinator.handle_completion(
+            CompleteMessage("same", "vocoder", True, cleanup_token=old_token)
+        )
+        coordinator.completion_futures.pop("same")
+        await coordinator.submit_request("same", "second")
+        await coordinator.abort("same")
+        new_token = control.aborts[-1].cleanup_token
+        assert old_token != new_token
+        await coordinator.handle_completion(
+            CompleteMessage("same", "vocoder", True, cleanup_token=old_token)
+        )
+        assert "same" in coordinator.requests
+        await coordinator.handle_completion(
+            CompleteMessage("same", "other-stage", True, cleanup_token=new_token)
+        )
+        assert "same" in coordinator.requests
+        await coordinator.handle_completion(
+            CompleteMessage("same", "vocoder", True, cleanup_token=new_token)
+        )
+        assert coordinator.requests == {}
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("early_confirmation", [False, True])
+def test_abort_cleanup_confirmation_handles_early_delivery_and_retry(
+    early_confirmation: bool,
+) -> None:
+    """A cleanup confirmation can race the broadcast without losing ownership."""
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["vocoder"],
+            max_in_flight=1,
+            abort_cleanup_stages=("vocoder",),
+        )
+        control = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        async def broadcast(message: AbortMessage) -> None:
+            control.aborts.append(message)
+            if early_confirmation:
+                await coordinator.handle_completion(
+                    CompleteMessage(
+                        message.request_id,
+                        "vocoder",
+                        True,
+                        cleanup_token=message.cleanup_token,
+                    )
+                )
+            else:
+                raise RuntimeError("delivery unavailable")
+
+        control.broadcast_abort = broadcast
+        await coordinator.submit_request("old", "original")
+        if early_confirmation:
+            assert await coordinator.abort("old")
+            assert coordinator.requests == {}
+        else:
+            with pytest.raises(RuntimeError, match="delivery unavailable"):
+                await coordinator.abort("old")
+            assert "old" in coordinator.requests
+            with pytest.raises(QueueFullError):
+                await coordinator.submit_request("new", "replacement")
+
+            async def deliver(message: AbortMessage) -> None:
+                control.aborts.append(message)
+
+            control.broadcast_abort = deliver
+            await coordinator.abort("old")
+            assert control.aborts[0].cleanup_token == control.aborts[1].cleanup_token
+            await coordinator.handle_completion(
+                CompleteMessage(
+                    "old",
+                    "vocoder",
+                    False,
+                    cleanup_token=control.aborts[-1].cleanup_token,
+                )
+            )
+            assert "old" in coordinator.requests
+            await coordinator.handle_completion(
+                CompleteMessage(
+                    "old",
+                    "vocoder",
+                    True,
+                    cleanup_token=control.aborts[-1].cleanup_token,
+                )
+            )
+            assert coordinator.requests == {}
+
+    asyncio.run(run())
+
+
+def test_cancelled_abort_caller_does_not_release_cleanup_reservation() -> None:
+    """Caller cancellation cannot bypass an in-flight abort cleanup reservation."""
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["vocoder"],
+            max_in_flight=1,
+            abort_cleanup_stages=("vocoder",),
+        )
+        control = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        sent = asyncio.Event()
+        release = asyncio.Event()
+
+        async def broadcast(message: AbortMessage) -> None:
+            control.aborts.append(message)
+            sent.set()
+            await release.wait()
+
+        control.broadcast_abort = broadcast
+        await coordinator.submit_request("old", "original")
+        caller = asyncio.create_task(coordinator.abort("old"))
+        await sent.wait()
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        with pytest.raises(QueueFullError):
+            await coordinator.submit_request("new", "replacement")
+        task = coordinator.abort_tasks["old"]
+        release.set()
+        await task
+        assert "old" in coordinator.requests
+        await coordinator.handle_completion(
+            CompleteMessage(
+                "old", "vocoder", True, cleanup_token=control.aborts[-1].cleanup_token
+            )
+        )
+        assert coordinator.requests == {}
+
+    asyncio.run(run())
