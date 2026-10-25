@@ -190,6 +190,15 @@ def test_channels_last_incremental_history_and_unbiased_carry(codec: DAC) -> Non
                 pass
 
 
+@pytest.fixture
+def forbid_cuda_initialization(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_initialization() -> None:
+        raise AssertionError("CPU codec must not initialize CUDA")
+
+    monkeypatch.setattr(torch.cuda, "_lazy_init", fail_initialization)
+
+
+@pytest.mark.usefixtures("forbid_cuda_initialization")
 @torch.no_grad()
 def test_native_whole_prefix_causality(codec: DAC) -> None:
     codes = torch.randint(0, 16, (1, 10, 21))
@@ -200,9 +209,9 @@ def test_native_whole_prefix_causality(codec: DAC) -> None:
         torch.testing.assert_close(
             prefix, whole[..., : frame_count * 16], atol=1e-4, rtol=1e-4
         )
-    assert not torch.cuda.is_initialized()
 
 
+@pytest.mark.usefixtures("forbid_cuda_initialization")
 @pytest.mark.parametrize("chunk_sizes", [(1,), (2,), (4,), (3, 1, 7, 2, 4)])
 @torch.no_grad()
 def test_incremental_matches_whole(codec: DAC, chunk_sizes: tuple[int, ...]) -> None:
@@ -227,7 +236,6 @@ def test_incremental_matches_whole(codec: DAC, chunk_sizes: tuple[int, ...]) -> 
     assert tail.shape == (1, 1, 0)
     assert state.processed_frames == 37
     assert state.is_final
-    assert not torch.cuda.is_initialized()
 
 
 @torch.no_grad()
@@ -435,13 +443,13 @@ def test_transposed_convolution_bias_is_not_accumulated(codec: DAC) -> None:
     )
 
 
+@pytest.mark.usefixtures("forbid_cuda_initialization")
 def test_unused_encoder_dtype_does_not_reject_decode(codec: DAC) -> None:
     codec.encoder.double()
     decoder = StatefulDACDecoder(codec, capacity=3)
     codes = torch.randint(0, 16, (1, 10, 2))
     waveform = decoder.decode_delta(codes, decoder.create_state(), is_final=True)
     assert waveform.dtype == torch.float32
-    assert not torch.cuda.is_initialized()
 
 
 @torch.no_grad()
@@ -505,6 +513,7 @@ def test_stateful_codec_import_and_cpu_decode_without_triton() -> None:
                     return original_import(name, *args, **kwargs)
             builtins.__import__ = without_triton
             import torch
+            assert not torch.cuda.is_initialized()
             from sglang_omni.models.fishaudio_drama3 import stateful_waveform
             from sglang_omni.models.fishaudio_drama3.stateful_decoder import StatefulDACDecoder
             from tests.unit_test.fixtures.fishaudio_codec import tiny_fishaudio_codec
@@ -517,6 +526,7 @@ def test_stateful_codec_import_and_cpu_decode_without_triton() -> None:
             assert audio.shape[-1] == 3 * codec.frame_length
             assert torch.isfinite(audio).all()
             decoder.release_state(state)
+            assert not torch.cuda.is_initialized()
         """
             ),
         ],

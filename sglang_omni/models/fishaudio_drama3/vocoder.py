@@ -392,7 +392,8 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         if request_id in self.request_slots:
             self.wait_for_stream_completion()
             assert self.stateful_decoder is not None
-            self.stateful_decoder.release_state(self.request_slots.pop(request_id))
+            self.stateful_decoder.release_state(self.request_slots[request_id])
+            self.request_slots.pop(request_id)
         else:
             pass
         super().clear_stream_state(request_id)

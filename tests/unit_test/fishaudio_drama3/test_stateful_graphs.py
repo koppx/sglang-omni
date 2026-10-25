@@ -3,15 +3,19 @@
 
 from dataclasses import dataclass, field
 
+import numpy as np
 import pytest
 import torch
 
+from sglang_omni.models.fishaudio_drama3.config import Drama3VocoderFactoryArgs
 from sglang_omni.models.fishaudio_drama3.stateful_decoder import StatefulDACDecoder
 from sglang_omni.models.fishaudio_drama3.stateful_graphs import (
     CAPTURE_FRAME_COUNTS,
     DeltaGraph,
     StatefulGraphDecoder,
 )
+from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
+from sglang_omni.scheduling.audio_stream import StreamVocoderState
 from tests.unit_test.fixtures.fishaudio_codec import tiny_fishaudio_codec
 
 
@@ -316,26 +320,37 @@ def test_nonempty_final_returns_owned_exact_audio_and_release_preserves_peer(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @torch.no_grad()
-def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output() -> None:
+@pytest.mark.parametrize("optimized", [False, True])
+def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output(
+    optimized: bool,
+) -> None:
     codec = tiny_fishaudio_codec().cuda().half()
-    backend = StatefulDACDecoder(codec, dtype=torch.float16, capacity=2)
+    backend = StatefulDACDecoder(
+        codec,
+        dtype=torch.float16,
+        capacity=2,
+        gemm_upsample=optimized,
+        folded_codebooks=optimized,
+        fuse_snake_history=optimized,
+        compile_attention=optimized,
+    )
     decoder = StatefulGraphDecoder(backend)
     assert backend.waveform_decoder is not None
     states = [decoder.create_state(slot_index) for slot_index in range(2)]
     inputs = [
-        torch.randint(0, 16, (1, backend.num_codebooks, 139), device="cuda")
+        torch.randint(0, 16, (1, backend.num_codebooks, 193), device="cuda")
         for _ in states
     ]
     expected = [codec.from_indices(codes.clone()).float() for codes in inputs]
     outputs: list[list[torch.Tensor]] = [[], []]
     snapshots: list[tuple[torch.Tensor, torch.Tensor]] = []
     position = 0
-    for frame_count in (1, 2, 3, 10, 12, 32, 64, 15):
+    for frame_count in (1, 63, 64, 64, 1):
         for slot_index in (1, 0):
             audio = decoder.decode_delta(
                 inputs[slot_index][..., position : position + frame_count],
                 states[slot_index],
-                is_final=position + frame_count == 139,
+                is_final=position + frame_count == 193,
             )
             outputs[slot_index].append(audio)
             snapshots.append((audio, audio.clone()))
@@ -358,6 +373,39 @@ def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output() -> No
     )
     decoder.release_state(replacement)
     decoder.release_state(states[1])
+    factory = Drama3VocoderFactoryArgs()
+    scheduler = Drama3VocoderScheduler(
+        codec,
+        device="cuda",
+        stream_stride=factory.stream_stride,
+        stream_followup_stride_ramp=factory.stream_followup_stride_ramp,
+        stream_followup_stride=factory.stream_followup_stride,
+        stream_overlap_tokens=factory.stream_overlap_tokens,
+        stream_crossfade_samples=0,
+        max_batch_size=1,
+        max_batch_wait_ms=0,
+        stateful_decoder=decoder,
+        stateful_max_streams=2,
+    )
+    long_state = decoder.create_state()
+    scheduler.request_slots["long-window"] = long_state
+    scheduler.stream_states["long-window"] = StreamVocoderState(
+        codes=[torch.cat((inputs[0][:, :1], inputs[0]), dim=1)[0]],
+        total_tokens=193,
+    )
+    chunk = scheduler.decode_stream_delta("long-window", is_final=True)
+    assert chunk is not None
+    torch.testing.assert_close(
+        torch.from_numpy(
+            np.frombuffer(chunk["audio_waveform"], dtype=np.float32).copy()
+        ),
+        expected[0][0, 0].cpu(),
+        atol=0.02,
+        rtol=0.02,
+    )
+    assert long_state.processed_frames == 193
+    assert long_state.is_final
+    scheduler.clear_stream_state("long-window")
     for audio, snapshot in snapshots:
         torch.testing.assert_close(audio, snapshot)
     with pytest.raises(ValueError, match="stale"):

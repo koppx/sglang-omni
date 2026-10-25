@@ -1001,6 +1001,29 @@ def test_stateful_failed_decode_waits_before_reset_and_reuse() -> None:
     assert drained(vocoder)[0].request_id == "fresh"
 
 
+def test_failed_slot_release_keeps_owner_for_retry() -> None:
+    """A failed release must not orphan the live slot before cleanup can retry."""
+    vocoder = stateful_vocoder(capacity=1)
+    frames = random_codec_frames(10)
+    native_stream_chunk(vocoder, "failed", frames)
+    decoder = vocoder.stateful_decoder
+    assert decoder is not None
+    state = vocoder.request_slots["failed"]
+    with patch.object(
+        decoder, "release_state", side_effect=RuntimeError("release failed")
+    ):
+        with pytest.raises(RuntimeError, match="release failed"):
+            vocoder.abort("failed")
+    assert vocoder.request_slots["failed"] is state
+    with pytest.raises(ValueError, match="No free production state slot"):
+        decoder.create_state()
+    vocoder.abort("failed")
+    assert not vocoder.request_slots
+    native_stream_chunk(vocoder, "replacement", frames)
+    assert "replacement" in vocoder.request_slots
+    vocoder.abort("replacement")
+
+
 def test_stateful_option_preserves_nonstream_full_decode() -> None:
     vocoder = stateful_vocoder()
     frames = random_codec_frames(23)
