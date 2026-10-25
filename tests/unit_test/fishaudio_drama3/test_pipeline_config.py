@@ -3,11 +3,16 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 from pydantic import ValidationError
 
+from sglang_omni.config.admission import resolve_coordinator_max_in_flight
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
+from sglang_omni.config.schema import ProcessConfig
+from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_CODEC_PATH,
     Drama3PipelineConfig,
@@ -86,6 +91,12 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "codec_path": DEFAULT_CODEC_PATH,
         **VOCODER_WINDOWS,
         "window_cuda_graphs": True,
+        "stateful_decode": False,
+        "stateful_gemm_upsample": False,
+        "stateful_folded_codebooks": False,
+        "stateful_fuse_snake_history": False,
+        "stateful_compile_attention": False,
+        "stateful_max_streams": 16,
         "decode_dtype": "float16",
         "max_new_tokens": 2048,
     }
@@ -245,3 +256,94 @@ def test_speech_fields_the_model_cannot_honor_are_refused(
         speech_validator().parse_raw_request({"input": "hello", field_name: value})
 
     assert rejection.value.param == field_name
+
+
+class EntryLimitedDrama(Drama3PipelineConfig):
+    admission_limit: ClassVar[int] = 7
+
+    def entry_stage_admission_limit(self) -> int | None:
+        return self.admission_limit
+
+
+@pytest.mark.parametrize("queued", [0, 1, 64])
+@pytest.mark.parametrize("entry_limited", [False, True])
+def test_stateful_capacity_tracks_coordinator_entry_limit(
+    queued: int, entry_limited: bool
+) -> None:
+    config_type = EntryLimitedDrama if entry_limited else Drama3PipelineConfig
+    config = ConfigManager(config_type(model_path="checkpoint")).merge_config(
+        [
+            ("tts_engine.engine.max_running_requests", "16"),
+            ("tts_engine.engine.max_queued_requests", str(queued)),
+            ("vocoder.factory.stateful_decode", "true"),
+        ]
+    )
+    plan, _ = compile_logical_processes(config)
+    capacity = launch_kwargs(config, "vocoder")["stateful_max_streams"]
+    assert capacity == resolve_coordinator_max_in_flight(
+        config, logical_process_plan=plan
+    )
+    assert capacity == (7 if entry_limited else 16 + queued)
+
+
+@pytest.mark.parametrize("process_name", ["preprocessing", "pipeline", "vocoder"])
+def test_stateful_rejects_replicas_without_changing_stateless(
+    process_name: str,
+) -> None:
+    config = Drama3PipelineConfig(model_path="checkpoint").model_dump()
+    config["processes"] = {
+        process_name: ProcessConfig(num_replicas=2, replica_devices=[0, 1]).model_dump()
+    }
+    stateless = Drama3PipelineConfig.model_validate(config)
+    assert stateless.processes[process_name].num_replicas == 2
+    config["stages"][2]["factory"]["stateful_decode"] = True
+    config["stages"][1]["engine"] = {
+        "max_running_requests": 16,
+        "max_queued_requests": 0,
+    }
+    with pytest.raises(ValidationError, match="single replicas"):
+        Drama3PipelineConfig.model_validate(config)
+
+
+def test_stateful_capacity_follows_engine_not_vocoder_batch() -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [
+            ("tts_engine.factory.max_running_requests", "32"),
+            ("tts_engine.engine.max_running_requests", "16"),
+            ("tts_engine.engine.max_queued_requests", "64"),
+            ("vocoder.factory.max_batch_size", "2"),
+            ("vocoder.factory.window_cuda_graphs", "false"),
+            ("vocoder.factory.stateful_decode", "true"),
+        ]
+    )
+    assert launch_kwargs(config, "vocoder")["stateful_max_streams"] == 80
+    assert launch_kwargs(config, "vocoder")["stateful_decode"] is True
+    assert "stateful_decode" not in launch_kwargs(config, "tts_engine")
+    logical_process_plan, _ = compile_logical_processes(config)
+    assert (
+        resolve_coordinator_max_in_flight(
+            config, logical_process_plan=logical_process_plan
+        )
+        == launch_kwargs(config, "vocoder")["stateful_max_streams"]
+    )
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        [("vocoder.factory.stateful_max_streams", "32")],
+        [("vocoder.factory.stateful_decode", "true")],
+        [
+            ("vocoder.factory.stateful_decode", "true"),
+            ("vocoder.factory.window_cuda_graphs", "false"),
+            ("vocoder.factory.stream_crossfade_samples", "1"),
+        ],
+    ],
+)
+def test_unsupported_stateful_configuration_rejected(
+    override: list[tuple[str, str]],
+) -> None:
+    with pytest.raises(ValidationError, match="stateful"):
+        ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+            override
+        )

@@ -314,3 +314,7 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 - [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
 - [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
 - [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
+
+## Opt-in stateful codec
+
+The stateful codec retains per-request convolution and attention history and supports GEMM upsampling, folded codebooks, Snake/history fusion and precision-preserving compiled attention. Stateless decoding remains the default. See [the selected codec benchmark report](../benchmarks/drama3_codec_selected_codec.md) for supported topology, memory/admission requirements, portable configuration, measured high-concurrency gains and first-audio/quality tradeoffs.

@@ -7,12 +7,14 @@ from typing import ClassVar, Literal
 
 from pydantic import Field, PositiveInt
 
+from sglang_omni.config.admission import resolve_coordinator_max_in_flight
 from sglang_omni.config.schema import (
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.config.topology import compile_logical_processes
 
 PACKAGE = "sglang_omni.models.fishaudio_drama3"
 DEFAULT_CONTEXT_LENGTH = 16384
@@ -91,6 +93,11 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     stream_crossfade_samples: int = Field(default=0, ge=0)
     max_batch_size: int = Field(default=8, ge=1)
     max_batch_wait_ms: int = Field(default=2, ge=0)
+    stateful_decode: bool = False
+    stateful_gemm_upsample: bool = False
+    stateful_folded_codebooks: bool = False
+    stateful_fuse_snake_history: bool = False
+    stateful_compile_attention: bool = False
     window_cuda_graphs: bool = True
     decode_dtype: Literal["float32", "float16"] = "float16"
 
@@ -187,6 +194,49 @@ class Drama3PipelineConfig(PipelineConfig):
                 )
             else:
                 pass
+        vocoder_factory = self.stage_named("vocoder").factory
+        assert isinstance(vocoder_factory, Drama3VocoderFactoryArgs)
+        if "stateful_max_streams" in (vocoder_factory.model_extra or {}):
+            raise ValueError(
+                "Drama 3's vocoder takes stateful_max_streams from the tts_engine "
+                "stage; set stages.tts_engine.factory.max_running_requests instead"
+            )
+        elif (
+            vocoder_factory.stateful_decode and vocoder_factory.stream_crossfade_samples
+        ):
+            raise ValueError("stateful_decode requires stream_crossfade_samples=0")
+        elif vocoder_factory.stateful_decode:
+            logical_process_plan, _ = compile_logical_processes(self)
+            vocoder_stage = self.stage_named("vocoder")
+            if (
+                vocoder_stage.tp_size != 1
+                or any(
+                    process.num_replicas != 1
+                    for process in logical_process_plan.processes
+                )
+                or any(stage.route_fn is not None for stage in self.stages)
+                or logical_process_plan.process_of("vocoder").stage_names
+                != ("vocoder",)
+            ):
+                raise ValueError(
+                    "stateful_decode requires a dedicated TP1 vocoder process, "
+                    "single replicas, and fixed routing"
+                )
+            elif (
+                resolve_coordinator_max_in_flight(
+                    self, logical_process_plan=logical_process_plan
+                )
+                is None
+            ):
+                raise ValueError(
+                    "stateful_decode requires finite end-to-end admission; set "
+                    "stages.tts_engine.engine.max_running_requests and "
+                    "stages.tts_engine.engine.max_queued_requests"
+                )
+            else:
+                pass
+        else:
+            pass
         if self.stage_named("vocoder").factory.max_new_tokens is not None:
             raise ValueError(
                 "Drama 3's vocoder takes max_new_tokens from the tts_engine stage; "
@@ -214,7 +264,18 @@ class Drama3PipelineConfig(PipelineConfig):
                 "stream_followup_stride": vocoder_factory.stream_followup_stride,
             }
         elif stage_name == "vocoder":
-            return {"max_new_tokens": engine_factory.max_new_tokens}
+            if vocoder_factory.stateful_decode:
+                logical_process_plan, _ = compile_logical_processes(self)
+                capacity = resolve_coordinator_max_in_flight(
+                    self, logical_process_plan=logical_process_plan
+                )
+                assert capacity is not None
+            else:
+                capacity = engine_factory.max_running_requests
+            return {
+                "max_new_tokens": engine_factory.max_new_tokens,
+                "stateful_max_streams": capacity,
+            }
         else:
             return {}
 
