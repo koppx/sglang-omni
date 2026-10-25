@@ -1973,6 +1973,26 @@ def test_abort_confirmation_follows_scheduler_cleanup() -> None:
     asyncio.run(run())
 
 
+def test_failed_abort_cleanup_stops_stage_and_surfaces_error() -> None:
+    async def run() -> None:
+        control = CloseAwareControlPlane()
+        scheduler = FakeScheduler()
+        stage = make_stage(name="vocoder", scheduler=scheduler, control_plane=control)
+
+        def fail_cleanup(request_id: str) -> None:
+            raise RuntimeError(f"cleanup failed for {request_id}")
+
+        scheduler.abort = fail_cleanup
+        await control.abort_inbox.put(AbortMessage("old", cleanup_token="generation-1"))
+        with pytest.raises(RuntimeError, match="cleanup failed for old"):
+            await asyncio.wait_for(stage.run(), timeout=2.0)
+        assert scheduler.stopped
+        assert control.closed
+        assert control.completions == []
+
+    asyncio.run(run())
+
+
 def test_failed_abort_cleanup_never_confirms_release() -> None:
     """A failed scheduler cleanup must leave the admission owner unconfirmed."""
 
@@ -1989,7 +2009,12 @@ def test_failed_abort_cleanup_never_confirms_release() -> None:
 
         scheduler.abort = fail_cleanup
         await control.abort_inbox.put(AbortMessage("old", cleanup_token="generation-1"))
-        await stage_obj.abort_listener()
+        abort_task = asyncio.create_task(stage_obj.abort_listener())
+        with pytest.raises(RuntimeError, match="cleanup failed for old"):
+            await abort_task
+        stage_obj.on_background_task_done(abort_task, "abort listener")
+        assert not stage_obj.running
+        assert isinstance(stage_obj.background_task_error, RuntimeError)
         assert control.completions == []
         assert "old" in stage_obj.aborted
 

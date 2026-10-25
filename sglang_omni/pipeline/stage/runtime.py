@@ -2537,7 +2537,8 @@ class Stage:
             pass
         except Exception:
             if self.scheduler_crash_error is None and self.running:
-                logger.exception("Stage %s abort listener crashed", self.name)
+                logger.exception(f"Stage {self.name} abort listener crashed")
+                raise
             else:
                 pass
 

@@ -785,9 +785,9 @@ class Coordinator(SessionGraphRunner):
 
         # A FAILED request is still owned only when its abort was not
         # delivered, so aborting it again retries that release.
-        if info.state in (
-            RequestState.COMPLETED,
-            RequestState.ABORTED,
+        if info.state == RequestState.COMPLETED or (
+            info.state == RequestState.ABORTED
+            and request_id not in self.pending_abort_cleanup
         ):
             return False
         else:
