@@ -603,10 +603,45 @@ def test_fused_snake_padding_is_bitwise_equal_to_snake_then_pad(
             BLOCK_ROWS=32,
             BLOCK_CHANNELS=64,
             PAD_LEFT=left,
-            PAD_RIGHT=right,
+            pad_right=right,
         )
     expected = F.pad(unpadded, (0, 0, pad_left, pad_right))
     assert torch.equal(output.view(torch.uint8), expected.view(torch.uint8))
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_snake_new_lengths_reuse_the_compiled_kernel(dtype: torch.dtype) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    alpha = torch.ones(96, device="cuda")
+    inverse_alpha = (alpha + 1e-9).reciprocal()
+    compiled_hashes: set[str] = set()
+    for frame_count in [1, 8, 9, 16, 17, 31, 32, 33, 64, 127]:
+        pad_right = (-frame_count) % 9
+        activation = torch.randn(2, frame_count + 3, 96, device="cuda", dtype=dtype)
+        output = torch.empty(
+            (2, frame_count + 54 + pad_right, 96), device="cuda", dtype=dtype
+        )
+        rows = 2 * output.shape[1]
+        compiled = snake_channels_last_kernel[((rows + 31) // 32, 2)](
+            activation,
+            alpha,
+            inverse_alpha,
+            output,
+            rows,
+            frame_count,
+            96,
+            frame_count + 3,
+            BLOCK_ROWS=32,
+            BLOCK_CHANNELS=64,
+            PAD_LEFT=54,
+            pad_right=pad_right,
+        )
+        compiled_hashes.add(compiled.hash)
+    assert len(compiled_hashes) == 1
 
 
 @pytest.mark.accelerator

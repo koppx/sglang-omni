@@ -32,7 +32,7 @@ SNAKE_BLOCK_CHANNELS = 64
 
 if triton is not None:
 
-    @triton.jit
+    @triton.jit(do_not_specialize=["rows", "frames", "batch_frames", "pad_right"])
     def snake_channels_last_kernel(
         x_ptr: torch.Tensor,
         alpha_ptr: torch.Tensor,
@@ -45,14 +45,14 @@ if triton is not None:
         BLOCK_ROWS: tl.constexpr,
         BLOCK_CHANNELS: tl.constexpr,
         PAD_LEFT: tl.constexpr = 0,
-        PAD_RIGHT: tl.constexpr = 0,
+        pad_right: int = 0,
     ) -> None:
         row = tl.program_id(0).to(tl.int64) * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
         channel = tl.program_id(1) * BLOCK_CHANNELS + tl.arange(0, BLOCK_CHANNELS)
         row_mask = row < rows
         channel_mask = channel < channels
         mask = row_mask[:, None] & channel_mask[None, :]
-        output_frames = frames + PAD_LEFT + PAD_RIGHT
+        output_frames = frames + PAD_LEFT + pad_right
         source_frame = row % output_frames - PAD_LEFT
         source_mask = (source_frame >= 0) & (source_frame < frames)
         source = ((row // output_frames) * batch_frames + source_frame) * channels
@@ -229,6 +229,6 @@ class ChannelsLastDecoder:
             BLOCK_ROWS=SNAKE_BLOCK_ROWS,
             BLOCK_CHANNELS=SNAKE_BLOCK_CHANNELS,
             PAD_LEFT=pad_left,
-            PAD_RIGHT=pad_right,
+            pad_right=pad_right,
         )
         return output
