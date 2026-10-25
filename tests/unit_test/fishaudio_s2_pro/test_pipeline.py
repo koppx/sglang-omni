@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gc
 import importlib
 import io
 import os
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
@@ -187,6 +189,47 @@ def test_fish_preprocessing_encodes_references_on_the_placement_device(
     assert torch.backends.cudnn.allow_tf32 is expected_tf32
 
 
+def test_encode_only_loader_releases_weight_norm_decoder(tmp_path: Path) -> None:
+    class WeightNormCodec(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.encoder = torch.nn.Linear(2, 2)
+            self.quantizer = torch.nn.Linear(2, 2)
+            self.decoder = torch.nn.utils.parametrizations.weight_norm(
+                torch.nn.Conv1d(2, 2, 3)
+            )
+
+    torch.save(WeightNormCodec().state_dict(), tmp_path / "codec.pth")
+    decoder_parameters: list[weakref.ReferenceType[torch.Tensor]] = []
+
+    def construct_codec(configuration: dict[str, str]) -> WeightNormCodec:
+        codec = WeightNormCodec()
+        codec.decoder.register_load_state_dict_post_hook(
+            lambda module, incompatible: decoder_parameters.extend(
+                weakref.ref(parameter) for parameter in module.parameters()
+            )
+        )
+        return codec
+
+    automatic_gc_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        with (
+            patch("hydra.utils.instantiate", side_effect=construct_codec),
+            patch("omegaconf.OmegaConf.load", return_value={}),
+        ):
+            codec = s2pro_stages.load_codec(str(tmp_path), "cpu", encode_only=True)
+        assert codec.decoder is None
+        assert decoder_parameters
+        assert all(parameter() is None for parameter in decoder_parameters)
+    finally:
+        if automatic_gc_enabled:
+            gc.enable()
+        else:
+            pass
+        gc.collect()
+
+
 class TinyReferenceCodec(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -215,7 +258,7 @@ def test_load_codec_preserves_weights_and_prunes_before_device_transfer(
         path: str, *, map_location: str, mmap: bool, weights_only: bool
     ) -> dict[str, torch.Tensor]:
         assert path == str(checkpoint_path)
-        assert map_location == ("cpu" if encode_only else device)
+        assert map_location == device
         assert mmap is True
         assert weights_only is True
         loaded_weights.update(
