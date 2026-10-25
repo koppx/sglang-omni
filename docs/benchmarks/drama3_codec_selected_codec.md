@@ -1,52 +1,56 @@
-# Drama 3: selected stateful codec optimizations
+# Drama 3 opt-in incremental streaming codec
 
-## Scope and attribution
+## Scope
 
-This opt-in SGLang-Omni implementation combines stateful codec execution, GEMM quantizer upsampling, folded embedding/output-projection tables, Snake/history-input fusion and compiled window attention. Existing channels-last decoding, tower fusion, device-resident AR inputs and sampling are not credited as new contributions. The selected production scope excludes compact LM head, mixed GDN, request-stable sampling, async lookahead, transport packing and admission coalescing experiments.
+The decoder reuses per-request causal convolution histories, unbiased transposed-convolution carries and window-attention state, processing only new codec frames. Optional GEMM upsampling, folded codebooks, Snake/history fusion and precision-preserving compiled attention run with exact-length CUDA graphs for 1–64 new frames. Longer arrivals are split. Outputs own their storage and slot release waits for submitted GPU work. The feature remains disabled by default.
 
-Each stream owns a generation-checked arena lease, convolution histories, unbiased transposed-convolution carry and window-attention state. Exact delta lengths 1–64 have shared CUDA graphs; the scheduler splits longer arrivals into supported deltas, and direct decoder calls above 64 frames are rejected. Graph submissions are serialized, outputs are independently owned, and release waits for submitted work. Capacity follows bounded end-to-end admission, not the vocoder batch size. Stateful mode requires fixed routing, single replicas, a dedicated TP1 vocoder process and no crossfade. Existing stateless mode remains the default.
+This change preserves main's compact semantic head and shared convolution bias/history contracts. Compact-head execution, existing tower fusion and existing sampling are not new contributions of this PR. Mixed recurrent kernels, recurrent-state precision changes, MPS and additional scheduling changes are outside scope.
 
-The attention compiler uses emulate_precision_casts=True to retain eager low-precision boundaries. The original compiler configuration failed a retained 63-frame generation at the unchanged FP16 atol=rtol=0.02; that failure remains documented and is not attributed to baseline randomness. The precision-preserving implementation passes that input and the full retained 288-input cohort. A formatting-only source-hash change occurred during the latter component run and is explicitly recorded in the retained local experiment summary; the later service runs have unchanged frozen hashes.
+Stateful mode requires bounded end-to-end admission, fixed routing, single replicas, a dedicated TP1 vocoder process and zero crossfade. Cancellation acknowledgments retain admission until cleanup completes; stale acknowledgments cannot retire a newer cancellation generation. Cleanup exceptions fail the stage instead of silently disabling cancellation. Failed slot release retains its owner for recovery.
 
-## Measured end-to-end results
+## Main-integrated service evidence
 
-Hardware: one H100 NVL, Torch 2.13 and SGLang 0.5.21. The headline below uses the exact codec-only staged publication tree, not the broader experimental tree. Each comparison is an independent fresh-boot A1/B1/B2/A2 experiment with 32 discarded warmups and 384 measured requests per boot: C1 64, C16 64, C32-hot 128 and arrival 128. Arrival rate is 16 requests/second with a fixed dispatch seed. Native temperature 1, top_p 0.9, top_k unset, seed unset and max_new_tokens 500 are unchanged. Original window graphs 10/20/32/64/96, FP16 codec, FP32 GDN state, original chunk ramp, async off, coalescing off and MPS off are retained. Percentages compare arm boot means and are not additive.
+Two independent fresh-boot ABBA experiments used one H100 NVL, Torch 2.13, SGLang 0.5.21, the same checkpoint, FP16 codec and FP32 recurrent state. Both arms retained main's compact semantic head, native temperature 1, top_p 0.9, unset seed, max_new_tokens 500, original window ramp and baseline graph buckets 10/20/32/64/96. Async decode and MPS were off. Each boot discarded 32 warmups and measured C1 64, C16 64, C32-hot 128 and arrival=16 requests/s 128 requests. All 3,072 measured requests completed without HTTP failures; two first-round length caps remain included. Output work varies stochastically.
 
-| Control | Workload | Mean E2E | Mean first audio | Audio throughput | Output tokens |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Mature window A | C1 | -1.74% | +1.39% | +1.53% | -0.36% |
-| Mature window A | C16 | +0.10% | +3.24% | +2.02% | +2.02% |
-| Mature window A | C32-hot | -4.27% | +1.71% | +8.85% | -4.03% |
-| Mature window A | Arrival | -7.73% | -30.40% | +7.72% | +0.99% |
-| Original stateful S | C1 | -3.18% | -2.35% | +3.43% | +0.04% |
-| Original stateful S | C16 | -1.44% | -1.28% | +5.56% | +2.41% |
-| Original stateful S | C32-hot | -6.26% | -7.83% | +0.94% | +2.36% |
-| Original stateful S | Arrival | -6.92% | -2.11% | +4.81% | +0.62% |
+The service baseline was 85d309fbc and the measured candidate was 86da9dfd4. The later main integration at 694461c2b changes MLX code, not this Python serving path. Subsequent fixes concern cleanup exception ordering and tests, not successful decoding arithmetic. These old measurements retain their original versions; they are not relabeled as measurements of later commits.
 
-Both comparisons complete all 1,536 measured requests without HTTP failures and with clean service/resource teardown and unchanged frozen source hashes. The window comparison retains one control A1 C32-hot length cap; the stateful comparison retains one candidate B2 C32-hot cap. C1/C16/C32 first-audio regressions against A and approximately neutral C16 E2E are real tradeoffs. Window-arrival C50/C100 continuity falls by 18.10%/16.82% relatively despite lower first-audio latency; this prevents claiming uniformly improved streaming continuity. C32 throughput is confounded by caps, output length and tail duration. Work varies stochastically, and two boots per arm do not establish precise causal attribution to individual features. The combination is a high-concurrency opt-in, not a universally better default.
+| Workload | Mean E2E change, round 1 / 2 | Audio throughput change, round 1 / 2 | Mean RTF change, round 1 / 2 |
+| --- | ---: | ---: | ---: |
+| C1 | +2.60% / -3.49% | -0.52% / +1.67% | Not a high-concurrency claim |
+| C16 | -4.00% / -6.51% | +3.60% / +6.76% | -3.41% / -6.50% |
+| C32-hot | -4.57% / -2.13% | +2.98% / +0.29% | -5.07% / -3.66% |
+| Arrival 16/s | -11.06% / -18.42% | +10.03% / +18.39% | -9.84% / -17.44% |
 
-The separate GF-controlled production ablation measures the incremental Snake plus precision-preserving compiled attention combination: C1/C16/C32-hot/arrival E2E -1.41%/-8.25%/-2.85%/-3.56%, with no failures/caps and near-equal token work. This is not transferred to Snake alone. Earlier GF-only E2E results were mixed; component speedups alone did not justify its independent selection.
+C16 and arrival arm ranges separate in these finite repetitions. C32 throughput ranges overlap and the second-round throughput change is small; caps, output length and tail work prevent a strong throughput claim there. Component acceleration is not an end-to-end acceleration percentage.
 
-## Quality and numerical limitations
+## First-audio and continuity tradeoffs
 
-All 3,072 measured A/S comparison outputs were scored with pinned Qwen3-ASR-1.7B revision 7278e1e70fe206f11671096ffdd38061171dd6e5 and UTMOS, with zero skips, regeneration or filtering. Both scoring services exited zero. Values below are means of the two per-boot corpus WERs and per-boot UTMOS means; caps remain included.
+The original 5% first-audio requirement did not specify a statistic. Mean first audio changes +0.31%/-3.26%, but the means of per-boot p50 values increase 15.80%/12.27%; p95 and p99 arm means improve. A later bounded diagnostic did not reproduce the p50 regression, which does not invalidate the original unfavorable boots or fully explain their cause. No universal first-audio improvement is claimed.
 
-| Control | Workload | WER control → candidate | UTMOS control → candidate |
-| --- | --- | --- | --- |
-| A | C1 | 0.7824% → 0.6401% | 3.8984 → 3.9302 |
-| A | C16 | 1.2091% → 1.4225% | 3.9351 → 3.8912 |
-| A | C32-hot | 1.5739% → 0.9151% | 3.8917 → 3.8819 |
-| A | Arrival | 1.0615% → 1.1347% | 3.8839 → 3.8840 |
-| S | C1 | 0.7824% → 0.9246% | 3.9121 → 3.9045 |
-| S | C16 | 0.9957% → 0.7112% | 3.9347 → 3.9102 |
-| S | C32-hot | 0.9517% → 0.8419% | 3.8799 → 3.8804 |
-| S | Arrival | 0.6589% → 1.0981% | 3.9052 → 3.8764 |
+Main-integrated arrival C50/C100 improve in both rounds. Earlier publication-tree experiments had an arrival continuity regression despite faster first audio; that historical result remains a limitation rather than being transferred to this configuration.
 
-These small stochastic cohorts show mixed changes, not formal quality noninferiority or proven baseline attribution for individual anomalies. Independent same-code reconstruction is the numerical gate, not service WER. The production precision component gate passes 281 numerical/lifecycle comparisons, including irregular chunks, interleaving, ownership, slot reset and graph replay, at the original FP16 tolerance. Its three alternating complete-set timing medians are 0.70530 seconds mature window versus 0.37116 seconds selected codec, including copies/D2H/release; this combined component comparison does not isolate individual features.
+In the first C128 capacity experiment, all four boots have 128 valid multi-chunk requests, no N/A values and C50/C100=0. Maximum playback-underrun p50/p95/p99 seconds are A1 0.6689/0.7253/0.8127, A2 0.7007/0.7419/0.7991, B1 0.2954/0.3322/0.4298 and B2 0.3281/0.3512/0.3558. The candidate improves this distribution, but neither arm meets continuous-playback requirements at this load. C128 smooth playback and sustained arrival capacity are not validated. Additional capacity repetitions are tracked separately and must not be inferred from this first experiment.
 
-## Reproduction and evidence
+## Full-output quality
 
-Use the normal Drama3 serving command and configure the following stage-owned flags; supply local model/codec paths and the normal deployment memory budgets. A finite admission bound must be set before enabling stateful mode.
+The two main service experiments and first capacity experiment contain 4,096 measured outputs. Every output was checked against its run, request, full target text, waveform hash and scoring record; all have valid WER and UTMOS, without filtering, skips or regeneration. The truncated display-text mistake occurred only in a later diagnostic's initial scoring attempt; that attempt was retained and all affected diagnostic WER scores were recomputed using complete targets. It does not affect these 4,096 original scores.
+
+| Workload | WER A → B, round 1 / 2 | UTMOS A → B, round 1 / 2 |
+| --- | --- | --- |
+| C1 | 0.7112% → 0.9246% / 0.8535% → 0.7824% | 3.9003 → 3.9083 / 3.9250 → 3.8978 |
+| C16 | 1.1380% → 1.3514% / 1.0669% → 0.7112% | 3.8747 → 3.8864 / 3.9277 → 3.9189 |
+| C32-hot | 1.1713% → 1.4275% / 0.8053% → 1.0615% | 3.8524 → 3.8830 / 3.8862 → 3.8638 |
+| Arrival 16/s | 0.8419% → 0.8419% / 1.0615% → 1.2811% | 3.8948 → 3.8835 / 3.8778 → 3.8868 |
+
+C32 contains 1,366 reference words per boot. Candidate totals increase by seven error words per ABBA experiment, or 0.2562 percentage points in the arm mean, in both rounds. Unfavorable long generations remain included. UTMOS improvements do not offset WER deterioration. There is no predeclared numerical noninferiority margin, and formal service-quality noninferiority is not established.
+
+A selected diagnostic captured 32 service code sequences per arm and replayed every sequence through both codecs and native whole decoding. For A-source codes, both codecs have 2/363 error words; for B-source codes, finite-window decoding has 5/363 and stateful/native decoding 3/363. All candidate reconstructions pass the unchanged FP16 atol=rtol=0.02 against native whole decoding. This finite selected cohort supports codec correctness, not unbiased full-service quality acceptance. The original 500/483-frame anomalies were not reproduced, and their cause remains incompletely explained. No independent listening assessment is claimed.
+
+## Regression and reproduction
+
+After resolving shared-filesystem import delays without increasing test timeouts, the candidate pipeline suite passes 967 tests with six skips and 15 deselections; fixed main passes 956 with the same skips/deselections. All 962 common test outcomes match, and 11 additional cleanup cases pass. Drama3 plus shared convolution passes 515 tests with four skips and 167 deselections. Actual H100 graph replay passes both optimized/unoptimized cases, including 63/64-frame history, a one-frame tail, interleaving, slot reuse, output ownership and a 193-frame scheduler split. Full repository pre-commit passes. Later test-only edits retain the same runtime source as the GPU validation.
+
+Enable the existing stage-owned options explicitly; keep all other deployment conditions identical in the control:
 
 ```bash
 python -m sglang_omni.cli serve --model-path "$DRAMA3_CHECKPOINT" \
@@ -63,33 +67,4 @@ python -m sglang_omni.cli serve --model-path "$DRAMA3_CHECKPOINT" \
   --vocoder.factory.stateful_compile_attention true
 ```
 
-Use benchmarks.eval.benchmark_tts_seedtts with --use-existing-server --generate-only --stream --collect-stream-outcomes, the same metadata in both arms, temperature 1, top_p 0.9 and max_new_tokens 500. Retain every generated output; run --transcribe-only and --utmos-only afterward. The archived service summaries contain per-boot latency, work, continuity, caps, activation and cleanup, not private waveforms or target text. Exact local experiment drivers and full artifacts are preserved locally; the portable command above does not claim to recreate the private cohort selection automatically.
-
-The per-boot reports, source freezes, worker activation records, quality scores and failed/incomplete experiments are retained locally, including the earlier broader-tree comparisons and compact-head negative results. They are not checked in as bulk JSON artifacts. The tables above report the exact publication-tree measurements, not the larger earlier experimental-tree gains. Mixed graph debugging was stopped and is not a release prerequisite. Independent review attempts failed at the provider API before analysis and provide no review credit.
-
-## Optimization inventory and disposition
-
-| Optimization direction | Local disposition |
-| --- | --- |
-| One backbone/tower forward, paged tower attention, fused tower, device-resident decode inputs | Already present and exercised; not new gains in this PR. |
-| Compact EOS/semantic head | Production-integrated locally and fully service-tested, but mixed high-concurrency/quality results; excluded from runtime publication. Component and production negative evidence retained. |
-| Stateful codec, GEMM, folded tables, Snake/history, compiled attention | Selected opt-in combination with exact-tree evidence above; no independent feature percentages added. |
-| Deferred convolution bias, fused RVQ, batched codec/split replay | Screened locally; negative E2E, failed numerical prerequisites or incomplete failed runs retained; excluded. |
-| Extra graph buckets, channels-last reference encoding | Screened separately; modest mixed gains or slower/changed conditioning codes; excluded. Baseline graph family unchanged here. |
-| Mixed GDN packed decode/chunked prefill, fused exp(g), startup warmup | Kernel/API probes and experimental integration retained; local mixed-graph replay failures unresolved and work stopped. No external-backend bug attribution. |
-| BF16 GDN recurrent state | Separate precision experiment, not adopted into the unchanged-FP32 comparison. |
-| Request-seeded draws and preemption history | Existing recovery and local seed probes exercised; no E2E speedup established, experimental implementation excluded. Native sampling unchanged. |
-| Prefill admission | Existing mechanism screened; load-specific first-audio/work tradeoffs, excluded. |
-| Whole-step output batching and tensor windows | Existing mechanisms exercised; new wire/packed transport experiments excluded. |
-| Ready notifications, event-driven scheduling, first-chunk express, sampling-row buckets | Existing paths or local screens; no qualified incremental E2E gain, no sibling-model behavior changes. |
-| Pre-encoded references | Existing validated references.N.vq_codes API; uncached encoder-cost screen is not generation E2E gain. |
-| MPS and SM share | Existing deployment support screened; mixed C1/quality/continuity or negative settings, excluded. |
-| Window ramp/smaller first windows | Lower TTFA but throughput/continuity tradeoffs, excluded; original ramp retained. |
-| MoE backends | DeepGEMM negative screen; installed FlashInfer FP8 selection falls back to Triton, so no false CUTLASS timing claim. |
-| Dense FP8 and prefix caching | Deliberately unadopted: unchanged dense precision and unsafe token-only audio-prefix hashing. |
-
-The earlier detailed screening report and all failed/incomplete raw experiments remain preserved locally. This inventory is a disposition record, not a claim that every experimental direction completed E2E qualification or that source reading is a timed experiment.
-
-## Regression and review status
-
-The exact codec-only staged tree passes the complete Drama3 CPU suite (507 passed, four skipped, 143 accelerator cases deselected), the focused six-module CPU regression (160 passed, 11 accelerator cases deselected) and actual H100 codec CUDA regression (8 passed, 95 deselected). A broader Drama3 plus pipeline IPC CPU run reports 546 passed, four skipped, 143 deselected and one failure: test_mp_runner_startup_failure_includes_child_factory_traceback times out after 30 seconds without child startup progress rather than reaching the intentional factory error. An isolated selected-tree run reproduces that failure, and the unchanged pinned baseline reproduces the same 30-second TimeoutError. This baseline/environment startup-test limitation is retained, not fixed by weakening the test or reported as a complete regression pass. Real service boots in the performance experiments complete successfully. Full repository pre-commit passes, including Rust formatting; staged Python files compile and the staged private-path scan finds no private host paths or waveform/target payloads. Independent review attempts fail with provider 400/403 before analysis, so no independent approval is claimed. Human review, broader hardware coverage and formal quality noninferiority remain outstanding for this Draft.
+Use benchmarks.eval.benchmark_tts_seedtts with --use-existing-server --generate-only --stream --collect-stream-outcomes and a fixed metadata list, retaining every output and cap. Score all outputs with the same pinned ASR and UTMOS assets. Private audio, target text and machine-specific paths are not published. Human review and acceptance of the documented quality/latency tradeoffs remain required; default-off is not a substitute for quality acceptance.
