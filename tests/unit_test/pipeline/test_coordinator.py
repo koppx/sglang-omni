@@ -1932,6 +1932,74 @@ def test_abort_cleanup_confirmation_handles_early_delivery_and_retry(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("cleanup_stages", [("vocoder",), ("vocoder", "other")])
+def test_failed_abort_broadcast_allows_clean_terminal_completion(
+    cleanup_stages: tuple[str, ...]
+) -> None:
+    """An undelivered abort must not hide a terminal result after resource cleanup."""
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["vocoder"],
+            max_in_flight=1,
+            abort_cleanup_stages=cleanup_stages,
+        )
+        control = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        async def fail_broadcast(message: AbortMessage) -> None:
+            control.aborts.append(message)
+            raise RuntimeError("delivery unavailable")
+
+        control.broadcast_abort = fail_broadcast
+        await coordinator.submit_request("old", "original")
+        future = coordinator.completion_futures["old"]
+        with pytest.raises(RuntimeError, match="delivery unavailable"):
+            await coordinator.abort("old")
+        with pytest.raises(QueueFullError):
+            await coordinator.submit_request("new", "replacement")
+        await coordinator.handle_completion(CompleteMessage("old", "preprocess", True))
+        assert "old" in coordinator.requests
+        await coordinator.handle_completion(
+            CompleteMessage("old", "vocoder", False, error="not cleaned")
+        )
+        assert "old" in coordinator.requests
+        assert not future.done()
+        await coordinator.handle_completion(
+            CompleteMessage("old", "vocoder", True, result="finished after cleanup")
+        )
+        if "other" in cleanup_stages:
+            assert not future.done()
+            with pytest.raises(QueueFullError):
+                await coordinator.submit_request("new", "replacement")
+            await coordinator.handle_completion(
+                CompleteMessage(
+                    "old", "other", True, cleanup_token=control.aborts[-1].cleanup_token
+                )
+            )
+            await coordinator.handle_completion(
+                CompleteMessage("old", "vocoder", True, result="finished after cleanup")
+            )
+        else:
+            pass
+        assert await asyncio.wait_for(future, timeout=1) == "finished after cleanup"
+        assert "old" not in coordinator.pending_abort_cleanup
+        await coordinator.submit_request("new", "replacement")
+        await coordinator.handle_completion(
+            CompleteMessage(
+                "old", "vocoder", True, cleanup_token=control.aborts[-1].cleanup_token
+            )
+        )
+        assert "new" in coordinator.requests
+        await coordinator.stop()
+
+    asyncio.run(run())
+
+
 def test_cancelled_abort_caller_does_not_release_cleanup_reservation() -> None:
     """Caller cancellation cannot bypass an in-flight abort cleanup reservation."""
 

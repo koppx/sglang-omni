@@ -227,6 +227,7 @@ class Coordinator(SessionGraphRunner):
         self.abort_tasks: dict[str, asyncio.Task[bool]] = {}
         self.abort_cleanup_stages: frozenset[str] = frozenset(abort_cleanup_stages)
         self.pending_abort_cleanup: dict[str, tuple[str, set[str]]] = {}
+        self.failed_abort_broadcasts: set[str] = set()
         self.admin_ops: dict[str, AdminPendingOperation] = {}
         self.admin_lock = asyncio.Lock()
 
@@ -282,6 +283,7 @@ class Coordinator(SessionGraphRunner):
                 pass
         self.requests.clear()
         self.pending_abort_cleanup.clear()
+        self.failed_abort_broadcasts.clear()
         self.partial_results.clear()
         # Note (Junnan Li): Session pumps await request futures; wake them before waiting for cleanup.
         await self.fail_sessions(message)
@@ -833,6 +835,7 @@ class Coordinator(SessionGraphRunner):
             pending[1].discard(msg.from_stage)
             if not pending[1]:
                 self.pending_abort_cleanup.pop(msg.request_id)
+                self.failed_abort_broadcasts.discard(msg.request_id)
                 info = self.requests.get(msg.request_id)
                 if info is not None and info.state in (
                     RequestState.ABORTED,
@@ -848,7 +851,16 @@ class Coordinator(SessionGraphRunner):
         self,
         request_id: str,
     ) -> bool:
-        await self.control_plane.broadcast_abort(self.abort_message(request_id))
+        try:
+            await self.control_plane.broadcast_abort(self.abort_message(request_id))
+        except Exception:
+            if request_id in self.pending_abort_cleanup:
+                self.failed_abort_broadcasts.add(request_id)
+            else:
+                pass
+            raise
+        else:
+            self.failed_abort_broadcasts.discard(request_id)
 
         info = self.requests.get(request_id)
         if info is None:
@@ -946,8 +958,29 @@ class Coordinator(SessionGraphRunner):
             self.handle_abort_cleanup(msg)
             return
         elif request_id in self.pending_abort_cleanup:
-            discard_saved_media(msg.result)
-            return
+            pending = self.pending_abort_cleanup[request_id]
+            terminal = self.replica_topology.logical_name(msg.from_stage)
+            if (
+                request_id in self.failed_abort_broadcasts
+                and msg.success
+                and pending[1] == {msg.from_stage}
+                and self.expected_terminal_stages(request_id) == {terminal}
+            ):
+                self.pending_abort_cleanup.pop(request_id)
+                self.failed_abort_broadcasts.discard(request_id)
+                info = self.requests.get(request_id)
+                if info is not None and info.state in (
+                    RequestState.ABORTED,
+                    RequestState.FAILED,
+                ):
+                    self.requests.pop(request_id, None)
+                    discard_saved_media(msg.result)
+                    return
+                else:
+                    pass
+            else:
+                discard_saved_media(msg.result)
+                return
         else:
             pass
         info = self.requests.get(request_id)
@@ -997,6 +1030,10 @@ class Coordinator(SessionGraphRunner):
             try:
                 await self.control_plane.broadcast_abort(self.abort_message(request_id))
             except Exception:
+                if request_id in self.pending_abort_cleanup:
+                    self.failed_abort_broadcasts.add(request_id)
+                else:
+                    pass
                 # Other stages may still hold this request, so keep its ID and
                 # admission slot until a later abort or stop releases them.
                 logger.warning(
@@ -1005,6 +1042,7 @@ class Coordinator(SessionGraphRunner):
                     exc_info=True,
                 )
             else:
+                self.failed_abort_broadcasts.discard(request_id)
                 self.release_aborted_request(request_id)
             self.partial_results.pop(request_id, None)
             self.reject_completion_future(
