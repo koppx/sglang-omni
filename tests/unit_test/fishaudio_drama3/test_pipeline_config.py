@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -20,6 +21,18 @@ from sglang_omni.models.fishaudio_drama3.config import (
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
+
+
+@pytest.fixture(autouse=True)
+def unvalidated_codec_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.find_spec", lambda name: True
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.get_gpu_device_info",
+        lambda device: SimpleNamespace(name="unvalidated GPU"),
+    )
+
 
 VOCODER_WINDOWS = {
     "stream_stride": 10,
@@ -360,3 +373,84 @@ def test_abort_cleanup_confirmation_is_enabled_only_for_stateful_codec() -> None
         ]
     )
     assert stateful.abort_cleanup_stages() == ("vocoder",)
+
+
+def test_validated_default_enables_bundle_with_matching_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.get_gpu_device_info",
+        lambda device: SimpleNamespace(name="NVIDIA H100 NVL"),
+    )
+    config = Drama3PipelineConfig(model_path="checkpoint")
+    kwargs = launch_kwargs(config, "vocoder")
+    assert all(
+        kwargs[name]
+        for name in (
+            "stateful_decode",
+            "stateful_gemm_upsample",
+            "stateful_folded_codebooks",
+            "stateful_fuse_snake_history",
+            "stateful_compile_attention",
+        )
+    )
+    assert kwargs["stateful_max_streams"] == config.entry_stage_admission_limit() == 16
+    rebuilt = Drama3PipelineConfig.model_validate(config.model_dump())
+    assert launch_kwargs(rebuilt, "vocoder") == kwargs
+    unfused = ConfigManager(config).merge_config(
+        [("vocoder.factory.stateful_fuse_snake_history", "false")]
+    )
+    assert launch_kwargs(unfused, "vocoder")["stateful_decode"]
+    assert not launch_kwargs(unfused, "vocoder")["stateful_fuse_snake_history"]
+    assert config.abort_cleanup_stages() == ("vocoder",)
+    disabled = ConfigManager(config).merge_config(
+        [("vocoder.factory.stateful_decode", "false")]
+    )
+    disabled_kwargs = launch_kwargs(disabled, "vocoder")
+    assert not disabled_kwargs["stateful_decode"]
+    assert not disabled_kwargs["stateful_compile_attention"]
+    assert disabled.abort_cleanup_stages() == ()
+    assert disabled.entry_stage_admission_limit() is None
+    replicated_document = config.model_dump()
+    replicated_document["processes"] = {
+        name: ProcessConfig(num_replicas=2, replica_devices=[0, 1]).model_dump()
+        for name in ("preprocessing", "pipeline", "vocoder")
+    }
+    replicated = Drama3PipelineConfig.model_validate(replicated_document)
+    assert not launch_kwargs(replicated, "vocoder")["stateful_decode"]
+    assert replicated.abort_cleanup_stages() == ()
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.find_spec", lambda name: None
+    )
+    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
+    assert config.abort_cleanup_stages() == ()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("stream_crossfade_samples", "1"),
+        ("decode_dtype", "float32"),
+        ("window_cuda_graphs", "false"),
+    ],
+)
+def test_automatic_codec_keeps_unsupported_modes_stateless(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: str
+) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.get_gpu_device_info",
+        lambda device: SimpleNamespace(name="NVIDIA H100 NVL"),
+    )
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [(f"vocoder.factory.{field}", value)]
+    )
+    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
+    assert config.abort_cleanup_stages() == ()

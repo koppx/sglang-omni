@@ -315,6 +315,6 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 - [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
 - [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
 
-## Opt-in stateful codec
+## Incremental streaming codec
 
-The stateful codec retains per-request convolution and attention history and supports GEMM upsampling, folded codebooks, Snake/history fusion and precision-preserving compiled attention. Stateless decoding remains the default. See [the selected codec benchmark report](../benchmarks/drama3_codec_selected_codec.md) for supported topology, memory/admission requirements, portable configuration, measured high-concurrency gains and first-audio/quality tradeoffs.
+The stateful codec retains per-request convolution and attention history and supports GEMM upsampling, folded codebooks, Snake/history fusion and precision-preserving compiled attention. Compatible H100 FP16 deployments automatically enable the complete bundle when its settings are unset. Crossfade, replicas, dynamic routing, shared vocoder processes, eager window decoding and other unvalidated devices retain the window decoder. Set --vocoder.factory.stateful_decode false to disable automatic selection. Automatic mode bounds admission and state slots by the engine factory's max_running_requests; explicit stateful mode retains its separately configured admission requirements. See [the selected codec benchmark report](../benchmarks/drama3_codec_selected_codec.md) for supported topology, memory/admission requirements, portable configuration, measured high-concurrency gains and first-audio/quality tradeoffs.

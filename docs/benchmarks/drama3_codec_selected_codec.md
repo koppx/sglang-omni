@@ -1,8 +1,8 @@
-# Drama 3 opt-in incremental streaming codec
+# Drama 3 incremental streaming codec
 
 ## Scope
 
-The decoder reuses per-request causal convolution histories, unbiased transposed-convolution carries and window-attention state, processing only new codec frames. Optional GEMM upsampling, folded codebooks, Snake/history fusion and precision-preserving compiled attention run with exact-length CUDA graphs for 1–64 new frames. Longer arrivals are split. Outputs own their storage and slot release waits for submitted GPU work. The feature remains disabled by default.
+The decoder reuses per-request causal convolution histories, unbiased transposed-convolution carries and window-attention state, processing only new codec frames. Optional GEMM upsampling, folded codebooks, Snake/history fusion and precision-preserving compiled attention run with exact-length CUDA graphs for 1–64 new frames. Longer arrivals are split. Outputs own their storage and slot release waits for submitted GPU work. Compatible H100 FP16 deployments automatically enable the full bundle when the stateful options are unset. Other devices and incompatible configurations retain the window decoder. Explicitly set --vocoder.factory.stateful_decode false to keep the window path. An explicit true retains manual mode, in which individual optimization flags must also be enabled explicitly.
 
 This change preserves main's compact semantic head and shared convolution bias/history contracts. Compact-head execution, existing tower fusion and existing sampling are not new contributions of this PR. Mixed recurrent kernels, recurrent-state precision changes, MPS and additional scheduling changes are outside scope.
 
@@ -80,7 +80,7 @@ python -m sglang_omni.cli serve --model-path "$DRAMA3_CHECKPOINT" \
   --vocoder.factory.stateful_compile_attention true
 ```
 
-Use benchmarks.eval.benchmark_tts_seedtts with --use-existing-server --generate-only --stream --collect-stream-outcomes and a fixed metadata list, retaining every output and cap. Score all outputs with the same pinned ASR and UTMOS assets. Private audio, target text and machine-specific paths are not published. Human review and acceptance of the documented quality/latency tradeoffs remain required; default-off is not a substitute for quality acceptance.
+Use benchmarks.eval.benchmark_tts_seedtts with --use-existing-server --generate-only --stream --collect-stream-outcomes and a fixed metadata list, retaining every output and cap. Score all outputs with the same pinned ASR and UTMOS assets. Private audio, target text and machine-specific paths are not published. Human review and acceptance of the documented quality/latency tradeoffs remain required. Automatic mode caps end-to-end admission at the engine factory's max_running_requests unless a smaller explicit engine capacity applies; slot capacity and cleanup acknowledgments use that same resolved selection. This admission policy differs from earlier explicitly enabled benchmark configurations, whose original measurements remain labeled separately.
 
 ## Portable identical-code reproduction
 
