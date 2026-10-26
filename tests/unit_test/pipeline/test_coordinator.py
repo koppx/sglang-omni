@@ -1932,6 +1932,72 @@ def test_abort_cleanup_confirmation_handles_early_delivery_and_retry(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("broadcast_fails", [False, True])
+def test_terminal_completion_during_abort_waits_for_broadcast_outcome(
+    broadcast_fails: bool,
+) -> None:
+    """A terminal response racing an abort must survive a failed broadcast."""
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["vocoder"],
+            max_in_flight=1,
+            abort_cleanup_stages=("vocoder",),
+        )
+        control = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def broadcast(message: AbortMessage) -> None:
+            control.aborts.append(message)
+            entered.set()
+            await release.wait()
+            if broadcast_fails:
+                raise RuntimeError("delivery failed")
+            else:
+                pass
+
+        control.broadcast_abort = broadcast
+        await coordinator.submit_request("old", "original")
+        future = coordinator.completion_futures["old"]
+        caller = asyncio.create_task(coordinator.abort("old"))
+        await entered.wait()
+        await coordinator.handle_completion(
+            CompleteMessage("old", "vocoder", True, result="finished")
+        )
+        assert not future.done()
+        with pytest.raises(QueueFullError):
+            await coordinator.submit_request("new", "replacement")
+        release.set()
+        if broadcast_fails:
+            with pytest.raises(RuntimeError, match="delivery failed"):
+                await caller
+            assert await asyncio.wait_for(future, timeout=1) == "finished"
+        else:
+            assert await caller
+            with pytest.raises(asyncio.CancelledError):
+                await future
+            with pytest.raises(QueueFullError):
+                await coordinator.submit_request("new", "replacement")
+            await coordinator.handle_completion(
+                CompleteMessage(
+                    "old",
+                    "vocoder",
+                    True,
+                    cleanup_token=control.aborts[-1].cleanup_token,
+                )
+            )
+        await coordinator.submit_request("new", "replacement")
+        await coordinator.stop()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("cleanup_stages", [("vocoder",), ("vocoder", "other")])
 def test_failed_abort_broadcast_allows_clean_terminal_completion(
     cleanup_stages: tuple[str, ...]
