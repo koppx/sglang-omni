@@ -321,13 +321,15 @@ def test_nonempty_final_returns_owned_exact_audio_and_release_preserves_peer(
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @torch.no_grad()
 @pytest.mark.parametrize("optimized", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output(
     optimized: bool,
+    dtype: torch.dtype,
 ) -> None:
-    codec = tiny_fishaudio_codec().cuda().half()
+    codec = tiny_fishaudio_codec().cuda().to(dtype=dtype)
     backend = StatefulDACDecoder(
         codec,
-        dtype=torch.float16,
+        dtype=dtype,
         capacity=2,
         gemm_upsample=optimized,
         folded_codebooks=optimized,
@@ -335,6 +337,7 @@ def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output(
         compile_attention=optimized,
     )
     decoder = StatefulGraphDecoder(backend)
+    tolerance = 0.02 if dtype == torch.float16 else 1e-4
     assert backend.waveform_decoder is not None
     states = [decoder.create_state(slot_index) for slot_index in range(2)]
     inputs = [
@@ -359,8 +362,8 @@ def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output(
         torch.testing.assert_close(
             torch.cat(outputs[slot_index], dim=-1).float(),
             expected[slot_index],
-            atol=0.02,
-            rtol=0.02,
+            atol=tolerance,
+            rtol=tolerance,
         )
     decoder.release_state(states[0])
     replacement = decoder.create_state(0)
@@ -368,8 +371,8 @@ def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output(
     torch.testing.assert_close(
         decoder.decode_delta(cold_codes, replacement).float(),
         codec.from_indices(cold_codes.clone()).float(),
-        atol=0.02,
-        rtol=0.02,
+        atol=tolerance,
+        rtol=tolerance,
     )
     decoder.release_state(replacement)
     decoder.release_state(states[1])
@@ -400,8 +403,8 @@ def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output(
             np.frombuffer(chunk["audio_waveform"], dtype=np.float32).copy()
         ),
         expected[0][0, 0].cpu(),
-        atol=0.02,
-        rtol=0.02,
+        atol=tolerance,
+        rtol=tolerance,
     )
     assert long_state.processed_frames == 193
     assert long_state.is_final
