@@ -6,6 +6,7 @@ from __future__ import annotations
 from importlib.util import find_spec
 from typing import ClassVar, Literal
 
+import torch
 from pydantic import Field, PositiveInt
 
 from sglang_omni.config.admission import resolve_coordinator_max_in_flight
@@ -180,7 +181,6 @@ class Drama3PipelineConfig(PipelineConfig):
         elif (
             not current_platform.is_cuda()
             or find_spec("triton") is None
-            or factory.decode_dtype != "float16"
             or not factory.window_cuda_graphs
             or factory.stream_crossfade_samples != 0
             or stage.tp_size != 1
@@ -197,7 +197,12 @@ class Drama3PipelineConfig(PipelineConfig):
             ):
                 return False
             else:
-                return True
+                return (
+                    current_platform.get_device_graph_backend(
+                        torch.device("cuda", stage.gpu)
+                    )
+                    is not None
+                )
 
     def entry_stage_admission_limit(self) -> int | None:
         vocoder = self.stage_named("vocoder").factory
