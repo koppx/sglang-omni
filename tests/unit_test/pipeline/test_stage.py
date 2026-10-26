@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import multiprocessing
 import pickle
 import threading
 import time
@@ -23,6 +24,7 @@ from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
+from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
 from sglang_omni.proto import (
     DataReadyMessage,
     ShutdownMessage,
@@ -1969,6 +1971,98 @@ def test_abort_confirmation_follows_scheduler_cleanup() -> None:
         confirmation = deserialize_message(serialize_message(control.completions[0]))
         assert confirmation.cleanup_token == "generation-1"
         assert confirmation.from_stage == "vocoder"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("second_cleanup_token", [None, "generation-2"])
+def test_tp_followers_keep_processing_token_bearing_aborts(
+    second_cleanup_token: str | None,
+) -> None:
+    async def run() -> None:
+        process_context = multiprocessing.get_context("spawn")
+        work_queue = process_context.Queue()
+        abort_queue = process_context.Queue()
+        leader_control = RecordingStageControlPlane()
+        follower_control = TPFollowerControlPlane(
+            stage_name="tts_engine",
+            work_queue=work_queue,
+            abort_queue=abort_queue,
+        )
+        leader_scheduler = FakeScheduler()
+        follower_scheduler = FakeScheduler()
+        leader = make_stage(
+            name="tts_engine",
+            role="leader",
+            tp_size=2,
+            control_plane=leader_control,
+            scheduler=leader_scheduler,
+            tp_fanout=TPLeaderFanout(
+                "tts_engine",
+                follower_work_queues=[work_queue],
+                follower_abort_queues=[abort_queue],
+            ),
+        )
+        follower = make_stage(
+            name="tts_engine",
+            role="follower",
+            tp_rank=1,
+            tp_size=2,
+            control_plane=follower_control,
+            scheduler=follower_scheduler,
+        )
+        leader.running = follower.running = True
+        leader_abort = leader_scheduler.abort
+        follower_abort = follower_scheduler.abort
+
+        def cleanup_leader(request_id: str) -> None:
+            leader_abort(request_id)
+            if request_id == "second":
+                leader.running = False
+            else:
+                pass
+
+        def cleanup_follower(request_id: str) -> None:
+            follower_abort(request_id)
+            if request_id == "second":
+                follower.running = False
+            else:
+                pass
+
+        leader_scheduler.abort = cleanup_leader
+        follower_scheduler.abort = cleanup_follower
+        await leader_control.abort_inbox.put(
+            AbortMessage("first", cleanup_token="generation-1")
+        )
+        await leader_control.abort_inbox.put(
+            AbortMessage("second", cleanup_token=second_cleanup_token)
+        )
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(leader.abort_listener(), follower.abort_listener()),
+                timeout=3.0,
+            )
+            assert (
+                leader_scheduler.aborted
+                == follower_scheduler.aborted
+                == [
+                    "first",
+                    "second",
+                ]
+            )
+            assert [
+                message.cleanup_token for message in leader_control.completions
+            ] == [
+                token
+                for token in ("generation-1", second_cleanup_token)
+                if token is not None
+            ]
+        finally:
+            follower_control.close()
+            work_queue.close()
+            abort_queue.close()
+            work_queue.join_thread()
+            abort_queue.join_thread()
 
     asyncio.run(run())
 

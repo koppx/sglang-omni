@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -18,19 +17,24 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_CODEC_PATH,
     Drama3PipelineConfig,
 )
+from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 @pytest.fixture(autouse=True)
-def unvalidated_codec_device(monkeypatch: pytest.MonkeyPatch) -> None:
+def codec_platform_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
+        lambda: False,
+    )
     monkeypatch.setattr(
         "sglang_omni.models.fishaudio_drama3.config.find_spec", lambda name: True
     )
     monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.get_gpu_device_info",
-        lambda device: SimpleNamespace(name="unvalidated GPU"),
+        "sglang_omni.models.fishaudio_drama3.config.current_platform.get_device_graph_backend",
+        lambda device: CudaDeviceGraphBackend(),
     )
 
 
@@ -375,19 +379,19 @@ def test_abort_cleanup_confirmation_is_enabled_only_for_stateful_codec() -> None
     assert stateful.abort_cleanup_stages() == ("vocoder",)
 
 
-def test_validated_default_enables_bundle_with_matching_admission(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("decode_dtype", ["float16", "float32"])
+def test_cuda_default_enables_bundle_with_matching_admission(
+    monkeypatch: pytest.MonkeyPatch, decode_dtype: str
 ) -> None:
     monkeypatch.setattr(
         "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
         lambda: True,
     )
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.get_gpu_device_info",
-        lambda device: SimpleNamespace(name="NVIDIA H100 NVL"),
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [("vocoder.factory.decode_dtype", decode_dtype)]
     )
-    config = Drama3PipelineConfig(model_path="checkpoint")
     kwargs = launch_kwargs(config, "vocoder")
+    assert kwargs["decode_dtype"] == decode_dtype
     assert all(
         kwargs[name]
         for name in (
@@ -434,7 +438,6 @@ def test_validated_default_enables_bundle_with_matching_admission(
     "field,value",
     [
         ("stream_crossfade_samples", "1"),
-        ("decode_dtype", "float32"),
         ("window_cuda_graphs", "false"),
     ],
 )
@@ -445,12 +448,67 @@ def test_automatic_codec_keeps_unsupported_modes_stateless(
         "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
         lambda: True,
     )
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.get_gpu_device_info",
-        lambda device: SimpleNamespace(name="NVIDIA H100 NVL"),
-    )
     config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
         [(f"vocoder.factory.{field}", value)]
     )
     assert not launch_kwargs(config, "vocoder")["stateful_decode"]
+    assert config.abort_cleanup_stages() == ()
+
+
+def test_automatic_codec_requires_a_device_graph_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.current_platform.get_device_graph_backend",
+        lambda device: None,
+    )
+    config = Drama3PipelineConfig(model_path="checkpoint")
+    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
+    assert config.entry_stage_admission_limit() is None
+    assert config.abort_cleanup_stages() == ()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        [("vocoder.process", "pipeline")],
+        [("vocoder.gpu_memory_fraction", "null")],
+        [("vocoder.gpu", "null")],
+        [("vocoder.tp_size", "2"), ("vocoder.gpu", "[0, 1]")],
+    ],
+    ids=["shared-process", "no-memory-budget", "no-gpu", "tp2"],
+)
+def test_automatic_codec_keeps_incompatible_placements_stateless(
+    monkeypatch: pytest.MonkeyPatch, overrides: list[tuple[str, str]]
+) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
+        lambda: True,
+    )
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        overrides
+    )
+    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
+    assert config.entry_stage_admission_limit() is None
+    assert config.abort_cleanup_stages() == ()
+
+
+def test_automatic_codec_keeps_dynamic_routing_stateless(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
+        lambda: True,
+    )
+    document = Drama3PipelineConfig(model_path="checkpoint").model_dump()
+    document["stages"][0][
+        "route_fn"
+    ] = "tests.unit_test.fixtures.pipeline_fakes.route_to_undeclared_talker"
+    config = Drama3PipelineConfig.model_validate(document)
+    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
+    assert config.entry_stage_admission_limit() is None
     assert config.abort_cleanup_stages() == ()

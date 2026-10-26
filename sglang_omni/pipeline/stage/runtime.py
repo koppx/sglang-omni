@@ -2522,7 +2522,7 @@ class Stage:
                 else:
                     pass
                 self.on_abort(abort_msg.request_id)
-                if abort_msg.cleanup_token is not None:
+                if self.owns_external_io and abort_msg.cleanup_token is not None:
                     await self.control_plane.send_complete(
                         CompleteMessage(
                             request_id=abort_msg.request_id,
