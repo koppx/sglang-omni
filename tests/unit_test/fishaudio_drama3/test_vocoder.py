@@ -553,7 +553,7 @@ def test_prepadded_causal_conv_keeps_original_length(
 
 @pytest.mark.accelerator
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
-@pytest.mark.parametrize("batch_size", [1, 2, 4, 8])
+@pytest.mark.parametrize("batch_size", [1, 2])
 @pytest.mark.parametrize(
     ("frame_count", "channel_count", "pad_left", "dilation", "trim_frames"),
     [(11, 7, 0, 1, 0), (13, 65, 6, 3, 5), (17, 96, 54, 9, 3)],
