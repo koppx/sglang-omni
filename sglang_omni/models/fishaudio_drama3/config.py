@@ -17,7 +17,6 @@ from sglang_omni.config.schema import (
 )
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.platforms import current_platform
-from sglang_omni.utils.gpu_memory import get_gpu_device_info
 
 PACKAGE = "sglang_omni.models.fishaudio_drama3"
 DEFAULT_CONTEXT_LENGTH = 16384
@@ -198,16 +197,26 @@ class Drama3PipelineConfig(PipelineConfig):
             ):
                 return False
             else:
-                name = get_gpu_device_info(stage.gpu).name or ""
-                return "H100" in name
+                return True
 
     def entry_stage_admission_limit(self) -> int | None:
         vocoder = self.stage_named("vocoder").factory
         assert isinstance(vocoder, Drama3VocoderFactoryArgs)
-        if vocoder.stateful_decode is None and self.uses_stateful_codec():
-            factory = self.stage_named("tts_engine").factory
+        if self.uses_stateful_codec():
+            engine = self.stage_named("tts_engine")
+            factory = engine.factory
             assert isinstance(factory, Drama3EngineFactoryArgs)
-            return factory.max_running_requests
+            overrides = engine.engine.overrides() if engine.engine is not None else {}
+            running = int(
+                overrides.get("max_running_requests", factory.max_running_requests)
+            )
+            queued = int(overrides.get("max_queued_requests", 0))
+            if running < 1 or queued < 0:
+                raise ValueError(
+                    "Stateful codec requires positive running and nonnegative queued capacity"
+                )
+            else:
+                return running + queued
         else:
             return None
 
@@ -315,9 +324,7 @@ class Drama3PipelineConfig(PipelineConfig):
                 assert capacity is not None
             else:
                 capacity = engine_factory.max_running_requests
-            optimized_default = (
-                stateful_decode and vocoder_factory.stateful_decode is None
-            )
+            optimized_default = stateful_decode
             return {
                 "max_new_tokens": engine_factory.max_new_tokens,
                 "stateful_max_streams": capacity,

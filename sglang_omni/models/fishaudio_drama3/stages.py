@@ -297,6 +297,12 @@ def create_vocoder_executor(
         pass
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     torch_device = torch.device(resolved_device)
+    logger.info(
+        f"Drama 3 codec selection: stateful={stateful_decode}, device={resolved_device}, "
+        f"dtype={decode_dtype}, graphs={window_cuda_graphs}, capacity={stateful_max_streams}, "
+        f"gemm={stateful_gemm_upsample}, folded={stateful_folded_codebooks}, "
+        f"snake_history={stateful_fuse_snake_history}, attention={stateful_compile_attention}"
+    )
     codec = load_codec(resolve_codec_directory(codec_path), resolved_device)
     codec.fold_weight_norm()
     num_codebooks = (

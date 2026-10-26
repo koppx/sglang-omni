@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -29,8 +28,8 @@ def unvalidated_codec_device(monkeypatch: pytest.MonkeyPatch) -> None:
         "sglang_omni.models.fishaudio_drama3.config.find_spec", lambda name: True
     )
     monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.get_gpu_device_info",
-        lambda device: SimpleNamespace(name="unvalidated GPU"),
+        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
+        lambda: False,
     )
 
 
@@ -345,7 +344,6 @@ def test_stateful_capacity_follows_engine_not_vocoder_batch() -> None:
     "override",
     [
         [("vocoder.factory.stateful_max_streams", "32")],
-        [("vocoder.factory.stateful_decode", "true")],
         [
             ("vocoder.factory.stateful_decode", "true"),
             ("vocoder.factory.window_cuda_graphs", "false"),
@@ -382,10 +380,6 @@ def test_validated_default_enables_bundle_with_matching_admission(
         "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
         lambda: True,
     )
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.get_gpu_device_info",
-        lambda device: SimpleNamespace(name="NVIDIA H100 NVL"),
-    )
     config = Drama3PipelineConfig(model_path="checkpoint")
     kwargs = launch_kwargs(config, "vocoder")
     assert all(
@@ -399,6 +393,18 @@ def test_validated_default_enables_bundle_with_matching_admission(
         )
     )
     assert kwargs["stateful_max_streams"] == config.entry_stage_admission_limit() == 16
+    explicit = ConfigManager(config).merge_config(
+        [("vocoder.factory.stateful_decode", "true")]
+    )
+    assert launch_kwargs(explicit, "vocoder") == kwargs
+    expanded = ConfigManager(config).merge_config(
+        [
+            ("tts_engine.engine.max_running_requests", "128"),
+            ("tts_engine.engine.max_queued_requests", "128"),
+        ]
+    )
+    assert launch_kwargs(expanded, "vocoder")["stateful_max_streams"] == 256
+    assert expanded.entry_stage_admission_limit() == 256
     rebuilt = Drama3PipelineConfig.model_validate(config.model_dump())
     assert launch_kwargs(rebuilt, "vocoder") == kwargs
     unfused = ConfigManager(config).merge_config(
@@ -444,10 +450,6 @@ def test_automatic_codec_keeps_unsupported_modes_stateless(
     monkeypatch.setattr(
         "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
         lambda: True,
-    )
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.get_gpu_device_info",
-        lambda device: SimpleNamespace(name="NVIDIA H100 NVL"),
     )
     config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
         [(f"vocoder.factory.{field}", value)]
