@@ -323,9 +323,12 @@ def test_nonempty_final_returns_owned_exact_audio_and_release_preserves_peer(
 @pytest.mark.parametrize("optimized", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output(
+    monkeypatch: pytest.MonkeyPatch,
     optimized: bool,
     dtype: torch.dtype,
 ) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
     codec = tiny_fishaudio_codec().cuda().to(dtype=dtype)
     backend = StatefulDACDecoder(
         codec,
