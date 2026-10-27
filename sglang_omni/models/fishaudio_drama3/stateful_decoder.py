@@ -151,6 +151,7 @@ class StatefulDACDecoder:
                 fullgraph=True,
                 dynamic=False,
                 recompile_limit=128,
+                isolate_recompiles=True,
                 options={"emulate_precision_casts": True},
             )
             if compile_attention
