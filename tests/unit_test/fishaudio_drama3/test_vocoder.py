@@ -1097,9 +1097,17 @@ def test_stateful_capacity_lag_abort_interleave_and_slot_reuse() -> None:
     native_stream_chunk(vocoder, "first", frames[:10])
     first_messages = drained(vocoder)
     saved_bytes = first_messages[0].data["audio_waveform"]
-    with pytest.raises(ValueError, match="No free production state slot"):
-        native_stream_chunk(vocoder, "waiting", frames[:10])
+    native_stream_chunk(vocoder, "waiting", frames[:10])
+    assert "waiting" in vocoder.window_fallback_requests
+    assert set(vocoder.request_slots) == {"first"}
+    fallback_messages = drained(vocoder)
+    with torch.no_grad():
+        expected = vocoder.codec.from_indices(frames[:10, 1:].T[None].clone())[0, 0]
+    np.testing.assert_allclose(
+        streamed_audio(fallback_messages), expected.numpy(), atol=1e-4, rtol=1e-4
+    )
     vocoder.abort("waiting")
+    assert "waiting" not in vocoder.window_fallback_requests
     assert "first" in vocoder.request_slots
     native_stream_chunk(vocoder, "first", frames[10:])
     first_payload = final_payload(frames, is_streaming=True)
@@ -1114,6 +1122,31 @@ def test_stateful_capacity_lag_abort_interleave_and_slot_reuse() -> None:
     assert reused[0].data["audio_waveform"] == saved_bytes
     vocoder.abort("reused")
     assert not vocoder.request_slots
+
+
+def test_full_arena_fallback_stays_window_based_until_completion() -> None:
+    vocoder = stateful_vocoder(capacity=1)
+    frames = random_codec_frames(35)
+    native_stream_chunk(vocoder, "owner", frames[:10])
+    drained(vocoder)
+    native_stream_chunk(vocoder, "overflow", frames[:10])
+    first = drained(vocoder)
+    assert "overflow" in vocoder.window_fallback_requests
+    vocoder.abort("owner")
+    native_stream_chunk(vocoder, "overflow", frames[10:])
+    assert "overflow" not in vocoder.request_slots
+    payload = final_payload(frames, is_streaming=True)
+    payload.request_id = "overflow"
+    vocoder.handle_streaming_new_request("overflow", payload)
+    vocoder.handle_stream_done("overflow")
+    messages = first + drained(vocoder)
+    assert streamed_audio(messages).size == frames.shape[0] * vocoder.codec.frame_length
+    assert len([message for message in messages if message.type == "result"]) == 1
+    assert "overflow" not in vocoder.window_fallback_requests
+    assert not vocoder.request_slots
+    native_stream_chunk(vocoder, "replacement", frames[:10])
+    assert "replacement" in vocoder.request_slots
+    vocoder.abort("replacement")
 
 
 def test_stateful_interleaved_requests_keep_independent_audio() -> None:

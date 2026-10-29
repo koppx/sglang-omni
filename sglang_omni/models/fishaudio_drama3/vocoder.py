@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import bisect
+import logging
 
 import torch
 
@@ -26,6 +27,8 @@ from sglang_omni.scheduling.audio_stream import (
 )
 from sglang_omni.scheduling.audio_vocoder import StreamingVocoderScheduler
 from sglang_omni.scheduling.message import OutgoingMessage
+
+logger = logging.getLogger(__name__)
 
 
 def generation_result_of(payload: StagePayload) -> Drama3GenerationResult:
@@ -170,6 +173,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         self.stateful_max_streams = stateful_max_streams
         self.decode_stream: torch.Stream | None = None
         self.request_slots: dict[str, StreamState] = {}
+        self.window_fallback_requests: set[str] = set()
         if not all(stride > 0 for stride in stream_followup_stride_ramp):
             raise ValueError(
                 f"stream_followup_stride_ramp entries must be > 0; got "
@@ -204,6 +208,22 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
     ) -> list[OutgoingMessage]:
         """Audio chunks for frames [1 + num_codebooks, frames] given in order."""
         state = self.stream_states.setdefault(request_id, StreamVocoderState())
+        if (
+            self.stateful_decoder is not None
+            and request_id not in self.request_slots
+            and request_id not in self.window_fallback_requests
+            and frame_codes.shape[1] > 0
+        ):
+            slot = self.stateful_decoder.try_create_state()
+            if slot is None:
+                self.window_fallback_requests.add(request_id)
+                logger.info(
+                    f"Drama 3 codec slots exhausted; request {request_id} uses window decoding"
+                )
+            else:
+                self.request_slots[request_id] = slot
+        else:
+            pass
         messages: list[OutgoingMessage] = []
         incoming_frame_count = frame_codes.shape[1]
         first_frame_index = 0
@@ -216,7 +236,10 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
             else:
                 end_frame_index = first_frame_index + remaining_window_frame_count
                 is_window_end = True
-            if self.stateful_decoder is not None:
+            if (
+                self.stateful_decoder is not None
+                and request_id not in self.window_fallback_requests
+            ):
                 state.codes.append(
                     frame_codes[:, first_frame_index:end_frame_index]
                     .detach()
@@ -346,7 +369,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         else:
             pass
         messages = self.stream_frames(request_id, frames[streamed_frame_count:].T)
-        if self.stateful_decoder is None:
+        if self.stateful_decoder is None or request_id in self.window_fallback_requests:
             return messages + super().on_stream_done(request_id)
         else:
             audio_chunk = self.decode_stream_delta(request_id, is_final=True)
@@ -397,6 +420,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         else:
             pass
         super().clear_stream_state(request_id)
+        self.window_fallback_requests.discard(request_id)
         self.stream_window_counts.pop(request_id, None)
 
     def wait_for_stream_completion(self) -> None:

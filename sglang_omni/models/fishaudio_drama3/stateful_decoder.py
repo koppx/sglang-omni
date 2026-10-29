@@ -262,6 +262,12 @@ class StatefulDACDecoder:
                 generation=self.arena.host_generations[slot_index],
             )
 
+    def try_create_state(self) -> StreamState | None:
+        if len(self.arena.active_slots) >= self.capacity:
+            return None
+        else:
+            return self.create_state()
+
     def reset(self, slot_index: int) -> None:
         if not 0 <= slot_index <= self.capacity:
             raise ValueError("State slot index outside arena")

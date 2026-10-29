@@ -353,7 +353,21 @@ def create_vocoder_executor(
         )
         stateful_decoder: StatefulDACDecoder | StatefulGraphDecoder | None
         if window_cuda_graphs:
-            stateful_decoder = StatefulGraphDecoder(backend)
+            hot_frame_counts = tuple(
+                sorted(
+                    {
+                        min(64, count)
+                        for count in (
+                            stream_stride,
+                            *stream_followup_stride_ramp,
+                            stream_followup_stride,
+                        )
+                    }
+                )
+            )
+            stateful_decoder = StatefulGraphDecoder(
+                backend, compiled_frame_counts=hot_frame_counts
+            )
             captured_frame_counts = sorted(stateful_decoder.graphs)
         else:
             stateful_decoder = backend
@@ -381,7 +395,7 @@ def create_vocoder_executor(
             pass
     else:
         stateful_decoder = None
-    if window_cuda_graphs and not stateful_decode:
+    if window_cuda_graphs and (not stateful_decode or torch_device.type != "cpu"):
         decode_window: WindowDecoder = WindowGraphDecoder(
             decode,
             num_codebooks=num_codebooks,

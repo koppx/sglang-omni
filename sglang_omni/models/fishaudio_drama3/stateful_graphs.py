@@ -9,7 +9,10 @@ from typing import Protocol
 import torch
 
 from sglang_omni.models.fishaudio_drama3.stateful_decoder import StatefulDACDecoder
-from sglang_omni.models.fishaudio_drama3.stateful_state import StreamState
+from sglang_omni.models.fishaudio_drama3.stateful_state import (
+    StreamState,
+    decode_attention,
+)
 from sglang_omni.platforms.device_graph import (
     CudaDeviceGraphBackend,
     DeviceGraphPool,
@@ -121,7 +124,13 @@ class StatefulGraphDecoder:
         backend: StatefulDACDecoder,
         *,
         graph_boundary: GraphBoundary | None = None,
+        capture_frame_counts: tuple[int, ...] = CAPTURE_FRAME_COUNTS,
+        compiled_frame_counts: tuple[int, ...] | None = None,
     ) -> None:
+        if any(count not in CAPTURE_FRAME_COUNTS for count in capture_frame_counts):
+            raise ValueError("Captured delta lengths must be within 1–64 frames")
+        else:
+            pass
         self.backend: StatefulDACDecoder = backend
         self.graph_boundary: GraphBoundary = (
             CudaGraphBoundary(backend.device)
@@ -139,16 +148,25 @@ class StatefulGraphDecoder:
                 dtype=torch.long,
                 device=backend.device,
             )
-            for frame_count in CAPTURE_FRAME_COUNTS
+            for frame_count in capture_frame_counts
         }
         self.graphs: dict[int, DeltaGraph] = {}
         with torch.no_grad():
             for frame_count, codes in self.static_codes.items():
+                attention_decode = backend.attention_decode
+                if (
+                    compiled_frame_counts is not None
+                    and frame_count not in compiled_frame_counts
+                ):
+                    backend.attention_decode = decode_attention
+                else:
+                    pass
                 try:
                     self.graphs[frame_count] = self.graph_boundary.capture(
                         backend, codes, self.device_slot_index, frame_count
                     )
                 finally:
+                    backend.attention_decode = attention_decode
                     self.graph_boundary.synchronize()
                     backend.reset(backend.scratch_slot_index)
                     self.graph_boundary.record_submission()
@@ -163,6 +181,15 @@ class StatefulGraphDecoder:
                 )
             else:
                 return self.backend.create_state(slot_index)
+
+    def try_create_state(self) -> StreamState | None:
+        with self.state_lock:
+            if self.is_stopped:
+                raise RuntimeError(
+                    "Stateful graph decoder stopped after execution failure"
+                )
+            else:
+                return self.backend.try_create_state()
 
     def reset(self, slot_index: int) -> None:
         with self.state_lock:
@@ -204,9 +231,14 @@ class StatefulGraphDecoder:
                     self.static_codes[frame_count].copy_(codes)
                     audio = self.graphs[frame_count].replay()
                 else:
-                    audio = self.backend.decode_slot(
-                        codes, self.device_slot_index, frame_count
-                    )
+                    attention_decode = self.backend.attention_decode
+                    self.backend.attention_decode = decode_attention
+                    try:
+                        audio = self.backend.decode_slot(
+                            codes, self.device_slot_index, frame_count
+                        )
+                    finally:
+                        self.backend.attention_decode = attention_decode
                 owned_audio = audio.clone()
                 self.graph_boundary.record_submission()
                 self.backend.commit_delta(state, frame_count, is_final)

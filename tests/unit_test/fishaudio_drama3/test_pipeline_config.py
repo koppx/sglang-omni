@@ -17,26 +17,9 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_CODEC_PATH,
     Drama3PipelineConfig,
 )
-from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
-
-
-@pytest.fixture(autouse=True)
-def codec_platform_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
-        lambda: False,
-    )
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.find_spec", lambda name: True
-    )
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.current_platform.get_device_graph_backend",
-        lambda device: CudaDeviceGraphBackend(),
-    )
-
 
 VOCODER_WINDOWS = {
     "stream_stride": 10,
@@ -297,10 +280,10 @@ def test_stateful_capacity_tracks_coordinator_entry_limit(
     )
     plan, _ = compile_logical_processes(config)
     capacity = launch_kwargs(config, "vocoder")["stateful_max_streams"]
-    assert capacity == resolve_coordinator_max_in_flight(
-        config, logical_process_plan=plan
+    assert capacity == 16
+    assert resolve_coordinator_max_in_flight(config, logical_process_plan=plan) == (
+        7 if entry_limited else 16 + queued
     )
-    assert capacity == (7 if entry_limited else 16 + queued)
 
 
 @pytest.mark.parametrize("process_name", ["preprocessing", "pipeline", "vocoder"])
@@ -333,7 +316,7 @@ def test_stateful_capacity_follows_engine_not_vocoder_batch() -> None:
             ("vocoder.factory.stateful_decode", "true"),
         ]
     )
-    assert launch_kwargs(config, "vocoder")["stateful_max_streams"] == 80
+    assert launch_kwargs(config, "vocoder")["stateful_max_streams"] == 32
     assert launch_kwargs(config, "vocoder")["stateful_decode"] is True
     assert "stateful_decode" not in launch_kwargs(config, "tts_engine")
     logical_process_plan, _ = compile_logical_processes(config)
@@ -341,7 +324,7 @@ def test_stateful_capacity_follows_engine_not_vocoder_batch() -> None:
         resolve_coordinator_max_in_flight(
             config, logical_process_plan=logical_process_plan
         )
-        == launch_kwargs(config, "vocoder")["stateful_max_streams"]
+        == 80
     )
 
 
@@ -379,18 +362,19 @@ def test_abort_cleanup_confirmation_is_enabled_only_for_stateful_codec() -> None
 
 
 @pytest.mark.parametrize("decode_dtype", ["float16", "float32"])
-def test_cuda_default_enables_bundle_with_matching_admission(
-    monkeypatch: pytest.MonkeyPatch, decode_dtype: str
+def test_stateful_is_opt_in_without_changing_default_admission(
+    decode_dtype: str,
 ) -> None:
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
-        lambda: True,
-    )
     config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
         [("vocoder.factory.decode_dtype", decode_dtype)]
     )
-    kwargs = launch_kwargs(config, "vocoder")
-    assert kwargs["decode_dtype"] == decode_dtype
+    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
+    assert config.entry_stage_admission_limit() is None
+    assert config.abort_cleanup_stages() == ()
+    explicit = ConfigManager(config).merge_config(
+        [("vocoder.factory.stateful_decode", "true")]
+    )
+    kwargs = launch_kwargs(explicit, "vocoder")
     assert all(
         kwargs[name]
         for name in (
@@ -401,86 +385,11 @@ def test_cuda_default_enables_bundle_with_matching_admission(
             "stateful_compile_attention",
         )
     )
-    assert kwargs["stateful_max_streams"] == config.entry_stage_admission_limit() == 16
-    explicit = ConfigManager(config).merge_config(
-        [("vocoder.factory.stateful_decode", "true")]
-    )
-    assert launch_kwargs(explicit, "vocoder") == kwargs
-    expanded = ConfigManager(config).merge_config(
-        [
-            ("tts_engine.engine.max_running_requests", "128"),
-            ("tts_engine.engine.max_queued_requests", "128"),
-        ]
-    )
-    assert launch_kwargs(expanded, "vocoder")["stateful_max_streams"] == 256
-    assert expanded.entry_stage_admission_limit() == 256
-    rebuilt = Drama3PipelineConfig.model_validate(config.model_dump())
+    assert kwargs["stateful_max_streams"] == 16
+    assert explicit.entry_stage_admission_limit() is None
+    assert explicit.abort_cleanup_stages() == ("vocoder",)
+    rebuilt = Drama3PipelineConfig.model_validate(explicit.model_dump())
     assert launch_kwargs(rebuilt, "vocoder") == kwargs
-    unfused = ConfigManager(config).merge_config(
-        [("vocoder.factory.stateful_fuse_snake_history", "false")]
-    )
-    assert launch_kwargs(unfused, "vocoder")["stateful_decode"]
-    assert not launch_kwargs(unfused, "vocoder")["stateful_fuse_snake_history"]
-    assert config.abort_cleanup_stages() == ("vocoder",)
-    disabled = ConfigManager(config).merge_config(
-        [("vocoder.factory.stateful_decode", "false")]
-    )
-    disabled_kwargs = launch_kwargs(disabled, "vocoder")
-    assert not disabled_kwargs["stateful_decode"]
-    assert not disabled_kwargs["stateful_compile_attention"]
-    assert disabled.abort_cleanup_stages() == ()
-    assert disabled.entry_stage_admission_limit() is None
-    replicated_document = config.model_dump()
-    replicated_document["processes"] = {
-        name: ProcessConfig(num_replicas=2, replica_devices=[0, 1]).model_dump()
-        for name in ("preprocessing", "pipeline", "vocoder")
-    }
-    replicated = Drama3PipelineConfig.model_validate(replicated_document)
-    assert not launch_kwargs(replicated, "vocoder")["stateful_decode"]
-    assert replicated.abort_cleanup_stages() == ()
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.find_spec", lambda name: None
-    )
-    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
-    assert config.abort_cleanup_stages() == ()
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("stream_crossfade_samples", "1"),
-        ("window_cuda_graphs", "false"),
-    ],
-)
-def test_automatic_codec_keeps_unsupported_modes_stateless(
-    monkeypatch: pytest.MonkeyPatch, field: str, value: str
-) -> None:
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
-        lambda: True,
-    )
-    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
-        [(f"vocoder.factory.{field}", value)]
-    )
-    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
-    assert config.abort_cleanup_stages() == ()
-
-
-def test_automatic_codec_requires_a_device_graph_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
-        lambda: True,
-    )
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.current_platform.get_device_graph_backend",
-        lambda device: None,
-    )
-    config = Drama3PipelineConfig(model_path="checkpoint")
-    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
-    assert config.entry_stage_admission_limit() is None
-    assert config.abort_cleanup_stages() == ()
 
 
 @pytest.mark.parametrize(
@@ -493,13 +402,9 @@ def test_automatic_codec_requires_a_device_graph_backend(
     ],
     ids=["shared-process", "no-memory-budget", "no-gpu", "tp2"],
 )
-def test_automatic_codec_keeps_incompatible_placements_stateless(
+def test_default_window_codec_preserves_existing_placements(
     monkeypatch: pytest.MonkeyPatch, overrides: list[tuple[str, str]]
 ) -> None:
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
-        lambda: True,
-    )
     config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
         overrides
     )
@@ -508,13 +413,9 @@ def test_automatic_codec_keeps_incompatible_placements_stateless(
     assert config.abort_cleanup_stages() == ()
 
 
-def test_automatic_codec_keeps_dynamic_routing_stateless(
+def test_default_window_codec_preserves_dynamic_routing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "sglang_omni.models.fishaudio_drama3.config.current_platform.is_cuda",
-        lambda: True,
-    )
     document = Drama3PipelineConfig(model_path="checkpoint").model_dump()
     document["stages"][0][
         "route_fn"

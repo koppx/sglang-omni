@@ -290,6 +290,38 @@ def test_capture_failure_cleans_scratch_without_mutating_live_slot() -> None:
     assert state.processed_frames == 3
 
 
+def test_hot_graphs_use_eager_attention_for_uncaptured_tails() -> None:
+    codec = tiny_fishaudio_codec()
+    backend = StatefulDACDecoder(codec, capacity=1)
+    reference = StatefulDACDecoder(codec, capacity=1)
+    boundary = CpuGraphBoundary()
+    decoder = StatefulGraphDecoder(
+        backend, graph_boundary=boundary, capture_frame_counts=(10, 12, 32, 64)
+    )
+    state = decoder.create_state()
+    expected_state = reference.create_state()
+
+    def forbid_compile(*args, **kwargs):
+        raise AssertionError("Uncaptured tail must not invoke compiled attention")
+
+    for count in (10, 1, 63, 64, 7):
+        codes = torch.randint(0, 16, (1, backend.num_codebooks, count))
+        original = backend.attention_decode
+        if count not in decoder.graphs:
+            backend.attention_decode = forbid_compile
+        else:
+            pass
+        try:
+            actual = decoder.decode_delta(codes, state)
+        finally:
+            backend.attention_decode = original
+        torch.testing.assert_close(
+            actual, reference.decode_delta(codes, expected_state), atol=1e-5, rtol=1e-5
+        )
+    assert sum(graph.replay_count for graph in boundary.graphs.values()) == 2
+    assert len(decoder.graphs) == 4
+
+
 @pytest.mark.parametrize("frame_count", [7, 10, 64])
 def test_nonempty_final_returns_owned_exact_audio_and_release_preserves_peer(
     decoder_pair: tuple[StatefulGraphDecoder, StatefulDACDecoder, CpuGraphBoundary],
@@ -339,7 +371,7 @@ def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output(
         fuse_snake_history=optimized,
         compile_attention=optimized,
     )
-    decoder = StatefulGraphDecoder(backend)
+    decoder = StatefulGraphDecoder(backend, compiled_frame_counts=(10, 12, 32, 64))
     tolerance = 0.02 if dtype == torch.float16 else 1e-4
     assert backend.waveform_decoder is not None
     states = [decoder.create_state(slot_index) for slot_index in range(2)]

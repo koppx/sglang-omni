@@ -3,13 +3,10 @@
 
 from __future__ import annotations
 
-from importlib.util import find_spec
 from typing import ClassVar, Literal
 
-import torch
 from pydantic import Field, PositiveInt
 
-from sglang_omni.config.admission import resolve_coordinator_max_in_flight
 from sglang_omni.config.schema import (
     EngineStageConfig,
     FactoryArgs,
@@ -17,7 +14,6 @@ from sglang_omni.config.schema import (
     StageConfig,
 )
 from sglang_omni.config.topology import compile_logical_processes
-from sglang_omni.platforms import current_platform
 
 PACKAGE = "sglang_omni.models.fishaudio_drama3"
 DEFAULT_CONTEXT_LENGTH = 16384
@@ -96,7 +92,7 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     stream_crossfade_samples: int = Field(default=0, ge=0)
     max_batch_size: int = Field(default=8, ge=1)
     max_batch_wait_ms: int = Field(default=2, ge=0)
-    stateful_decode: bool | None = None
+    stateful_decode: bool = False
     stateful_gemm_upsample: bool | None = None
     stateful_folded_codebooks: bool | None = None
     stateful_fuse_snake_history: bool | None = None
@@ -173,57 +169,9 @@ class Drama3PipelineConfig(PipelineConfig):
     ]
 
     def uses_stateful_codec(self) -> bool:
-        stage = self.stage_named("vocoder")
-        factory = stage.factory
+        factory = self.stage_named("vocoder").factory
         assert isinstance(factory, Drama3VocoderFactoryArgs)
-        if factory.stateful_decode is not None:
-            return factory.stateful_decode
-        elif (
-            not current_platform.is_cuda()
-            or find_spec("triton") is None
-            or not factory.window_cuda_graphs
-            or factory.stream_crossfade_samples != 0
-            or stage.tp_size != 1
-            or stage.gpu_memory_fraction is None
-            or not isinstance(stage.gpu, int)
-        ):
-            return False
-        else:
-            logical_plan, _ = compile_logical_processes(self)
-            if (
-                any(process.num_replicas != 1 for process in logical_plan.processes)
-                or any(config.route_fn is not None for config in self.stages)
-                or logical_plan.process_of("vocoder").stage_names != ("vocoder",)
-            ):
-                return False
-            else:
-                return (
-                    current_platform.get_device_graph_backend(
-                        torch.device("cuda", stage.gpu)
-                    )
-                    is not None
-                )
-
-    def entry_stage_admission_limit(self) -> int | None:
-        vocoder = self.stage_named("vocoder").factory
-        assert isinstance(vocoder, Drama3VocoderFactoryArgs)
-        if self.uses_stateful_codec():
-            engine = self.stage_named("tts_engine")
-            factory = engine.factory
-            assert isinstance(factory, Drama3EngineFactoryArgs)
-            overrides = engine.engine.overrides() if engine.engine is not None else {}
-            running = int(
-                overrides.get("max_running_requests", factory.max_running_requests)
-            )
-            queued = int(overrides.get("max_queued_requests", 0))
-            if running < 1 or queued < 0:
-                raise ValueError(
-                    "Stateful codec requires positive running and nonnegative queued capacity"
-                )
-            else:
-                return running + queued
-        else:
-            return None
+        return factory.stateful_decode
 
     def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
@@ -278,17 +226,6 @@ class Drama3PipelineConfig(PipelineConfig):
                     "stateful_decode requires a dedicated TP1 vocoder process, "
                     "single replicas, and fixed routing"
                 )
-            elif (
-                resolve_coordinator_max_in_flight(
-                    self, logical_process_plan=logical_process_plan
-                )
-                is None
-            ):
-                raise ValueError(
-                    "stateful_decode requires finite end-to-end admission; set "
-                    "stages.tts_engine.engine.max_running_requests and "
-                    "stages.tts_engine.engine.max_queued_requests"
-                )
             else:
                 pass
         else:
@@ -321,14 +258,7 @@ class Drama3PipelineConfig(PipelineConfig):
             }
         elif stage_name == "vocoder":
             stateful_decode = self.uses_stateful_codec()
-            if stateful_decode:
-                logical_process_plan, _ = compile_logical_processes(self)
-                capacity = resolve_coordinator_max_in_flight(
-                    self, logical_process_plan=logical_process_plan
-                )
-                assert capacity is not None
-            else:
-                capacity = engine_factory.max_running_requests
+            capacity = engine_factory.max_running_requests
             optimized_default = stateful_decode
             return {
                 "max_new_tokens": engine_factory.max_new_tokens,
