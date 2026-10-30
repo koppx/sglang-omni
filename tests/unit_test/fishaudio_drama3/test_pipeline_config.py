@@ -422,3 +422,28 @@ def test_default_window_codec_preserves_dynamic_routing() -> None:
     assert not launch_kwargs(config, "vocoder")["stateful_decode"]
     assert config.entry_stage_admission_limit() is None
     assert config.abort_cleanup_stages() == ()
+
+
+def test_reference_sampling_reaches_the_engine_only_when_set() -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [
+            ("tts_engine.factory.reference_sampling", "true"),
+            ("tts_engine.factory.reference_sampling_fallback", "ras"),
+        ]
+    )
+    assert isinstance(config, Drama3PipelineConfig)
+
+    engine_kwargs = launch_kwargs(config, "tts_engine")
+
+    assert (
+        engine_kwargs["reference_sampling"],
+        engine_kwargs["reference_sampling_fallback"],
+    ) == (True, "ras")
+    with pytest.raises(ValidationError, match="reference_sampling_fallback"):
+        ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+            [("tts_engine.factory.reference_sampling_fallback", "greedy")]
+        )
+
+
+def test_epsilon_cutoff_is_a_supported_speech_field() -> None:
+    speech_validator().parse_raw_request({"input": "hello", "epsilon_cutoff": 1e-3})
