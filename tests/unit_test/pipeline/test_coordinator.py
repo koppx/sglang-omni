@@ -1762,22 +1762,29 @@ def test_last_terminal_waveform_over_the_cap_fails_its_own_stream(
     asyncio.run(run())
 
 
+def cleanup_coordinator(
+    cleanup_stages: tuple[str, ...] = ("vocoder",),
+) -> tuple[Coordinator, RecordingCoordinatorControlPlane]:
+    coordinator = Coordinator(
+        "inproc://complete",
+        "inproc://abort",
+        entry_stage="preprocess",
+        terminal_stages=["vocoder"],
+        max_in_flight=1,
+        abort_cleanup_stages=cleanup_stages,
+    )
+    control = RecordingCoordinatorControlPlane()
+    coordinator.control_plane = control
+    coordinator.register_stage("preprocess", "inproc://preprocess")
+    return coordinator, control
+
+
 @pytest.mark.parametrize("failed", [False, True])
 def test_cleanup_ack_retains_admission_until_resource_release(failed: bool) -> None:
     """A sent abort cannot admit replacement work before stage cleanup completes."""
 
     async def run() -> None:
-        coordinator = Coordinator(
-            "inproc://complete",
-            "inproc://abort",
-            entry_stage="preprocess",
-            terminal_stages=["vocoder"],
-            max_in_flight=1,
-            abort_cleanup_stages=("vocoder",),
-        )
-        control = RecordingCoordinatorControlPlane()
-        coordinator.control_plane = control
-        coordinator.register_stage("preprocess", "inproc://preprocess")
+        coordinator, control = cleanup_coordinator()
         await coordinator.submit_request("old", "original")
         if failed:
             await coordinator.handle_completion(
@@ -1821,17 +1828,7 @@ def test_cleanup_confirmation_cannot_release_reused_request_id() -> None:
     """A delayed old confirmation cannot retire a new cancellation generation."""
 
     async def run() -> None:
-        coordinator = Coordinator(
-            "inproc://complete",
-            "inproc://abort",
-            entry_stage="preprocess",
-            terminal_stages=["vocoder"],
-            max_in_flight=1,
-            abort_cleanup_stages=("vocoder",),
-        )
-        control = RecordingCoordinatorControlPlane()
-        coordinator.control_plane = control
-        coordinator.register_stage("preprocess", "inproc://preprocess")
+        coordinator, control = cleanup_coordinator()
         await coordinator.submit_request("same", "first")
         await coordinator.abort("same")
         old_token = control.aborts[-1].cleanup_token
@@ -1866,17 +1863,7 @@ def test_abort_cleanup_confirmation_handles_early_delivery_and_retry(
     """A cleanup confirmation can race the broadcast without losing ownership."""
 
     async def run() -> None:
-        coordinator = Coordinator(
-            "inproc://complete",
-            "inproc://abort",
-            entry_stage="preprocess",
-            terminal_stages=["vocoder"],
-            max_in_flight=1,
-            abort_cleanup_stages=("vocoder",),
-        )
-        control = RecordingCoordinatorControlPlane()
-        coordinator.control_plane = control
-        coordinator.register_stage("preprocess", "inproc://preprocess")
+        coordinator, control = cleanup_coordinator()
 
         async def broadcast(message: AbortMessage) -> None:
             control.aborts.append(message)
@@ -1939,17 +1926,7 @@ def test_terminal_completion_during_abort_waits_for_broadcast_outcome(
     """A terminal response racing an abort must survive a failed broadcast."""
 
     async def run() -> None:
-        coordinator = Coordinator(
-            "inproc://complete",
-            "inproc://abort",
-            entry_stage="preprocess",
-            terminal_stages=["vocoder"],
-            max_in_flight=1,
-            abort_cleanup_stages=("vocoder",),
-        )
-        control = RecordingCoordinatorControlPlane()
-        coordinator.control_plane = control
-        coordinator.register_stage("preprocess", "inproc://preprocess")
+        coordinator, control = cleanup_coordinator()
         entered = asyncio.Event()
         release = asyncio.Event()
 
@@ -2005,17 +1982,7 @@ def test_failed_abort_broadcast_allows_clean_terminal_completion(
     """An undelivered abort must not hide a terminal result after resource cleanup."""
 
     async def run() -> None:
-        coordinator = Coordinator(
-            "inproc://complete",
-            "inproc://abort",
-            entry_stage="preprocess",
-            terminal_stages=["vocoder"],
-            max_in_flight=1,
-            abort_cleanup_stages=cleanup_stages,
-        )
-        control = RecordingCoordinatorControlPlane()
-        coordinator.control_plane = control
-        coordinator.register_stage("preprocess", "inproc://preprocess")
+        coordinator, control = cleanup_coordinator(cleanup_stages)
 
         async def fail_broadcast(message: AbortMessage) -> None:
             control.aborts.append(message)
@@ -2070,17 +2037,7 @@ def test_cancelled_abort_caller_does_not_release_cleanup_reservation() -> None:
     """Caller cancellation cannot bypass an in-flight abort cleanup reservation."""
 
     async def run() -> None:
-        coordinator = Coordinator(
-            "inproc://complete",
-            "inproc://abort",
-            entry_stage="preprocess",
-            terminal_stages=["vocoder"],
-            max_in_flight=1,
-            abort_cleanup_stages=("vocoder",),
-        )
-        control = RecordingCoordinatorControlPlane()
-        coordinator.control_plane = control
-        coordinator.register_stage("preprocess", "inproc://preprocess")
+        coordinator, control = cleanup_coordinator()
         sent = asyncio.Event()
         release = asyncio.Event()
 
@@ -2116,17 +2073,7 @@ def test_cleanup_timeout_keeps_capacity_until_shutdown() -> None:
     """A cleanup timeout cannot release capacity or leave shutdown admissions open."""
 
     async def run() -> None:
-        coordinator = Coordinator(
-            "inproc://complete",
-            "inproc://abort",
-            entry_stage="preprocess",
-            terminal_stages=["vocoder"],
-            max_in_flight=1,
-            abort_cleanup_stages=("vocoder",),
-        )
-        control = RecordingCoordinatorControlPlane()
-        coordinator.control_plane = control
-        coordinator.register_stage("preprocess", "inproc://preprocess")
+        coordinator, control = cleanup_coordinator()
         await coordinator.submit_request("old", "original")
         await coordinator.abort("old")
         token = control.aborts[-1].cleanup_token
@@ -2154,17 +2101,7 @@ def test_unconfirmed_abort_retries_cleanup_without_releasing_admission() -> None
     """A lost cleanup confirmation can be retried while admission stays reserved."""
 
     async def run() -> None:
-        coordinator = Coordinator(
-            "inproc://complete",
-            "inproc://abort",
-            entry_stage="preprocess",
-            terminal_stages=["vocoder"],
-            max_in_flight=1,
-            abort_cleanup_stages=("vocoder",),
-        )
-        control = RecordingCoordinatorControlPlane()
-        coordinator.control_plane = control
-        coordinator.register_stage("preprocess", "inproc://preprocess")
+        coordinator, control = cleanup_coordinator()
         await coordinator.submit_request("old", "original")
         await coordinator.abort("old")
         token = control.aborts[-1].cleanup_token

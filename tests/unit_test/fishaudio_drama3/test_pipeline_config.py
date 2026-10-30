@@ -403,7 +403,7 @@ def test_stateful_is_opt_in_without_changing_default_admission(
     ids=["shared-process", "no-memory-budget", "no-gpu", "tp2"],
 )
 def test_default_window_codec_preserves_existing_placements(
-    monkeypatch: pytest.MonkeyPatch, overrides: list[tuple[str, str]]
+    overrides: list[tuple[str, str]],
 ) -> None:
     config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
         overrides
@@ -413,9 +413,7 @@ def test_default_window_codec_preserves_existing_placements(
     assert config.abort_cleanup_stages() == ()
 
 
-def test_default_window_codec_preserves_dynamic_routing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_default_window_codec_preserves_dynamic_routing() -> None:
     document = Drama3PipelineConfig(model_path="checkpoint").model_dump()
     document["stages"][0][
         "route_fn"
