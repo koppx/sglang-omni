@@ -1110,29 +1110,32 @@ def test_stateful_large_windows_preserve_audio_and_chunk_boundaries(
 
 def test_stateful_capacity_lag_abort_interleave_and_slot_reuse() -> None:
     vocoder = stateful_vocoder(capacity=1)
+    first_window_frames = vocoder.stream_stride
     frames = random_codec_frames(20)
-    native_stream_chunk(vocoder, "first", frames[:10])
+    native_stream_chunk(vocoder, "first", frames[:first_window_frames])
     first_messages = drained(vocoder)
     saved_bytes = first_messages[0].data["audio_waveform"]
-    native_stream_chunk(vocoder, "waiting", frames[:10])
+    native_stream_chunk(vocoder, "waiting", frames[:first_window_frames])
     assert "waiting" in vocoder.window_fallback_requests
     assert set(vocoder.request_slots) == {"first"}
     fallback_messages = drained(vocoder)
     with torch.no_grad():
-        expected = vocoder.codec.from_indices(frames[:10, 1:].T[None].clone())[0, 0]
+        expected = vocoder.codec.from_indices(
+            frames[:first_window_frames, 1:].T[None].clone()
+        )[0, 0]
     np.testing.assert_allclose(
         streamed_audio(fallback_messages), expected.numpy(), atol=1e-4, rtol=1e-4
     )
     vocoder.abort("waiting")
     assert "waiting" not in vocoder.window_fallback_requests
     assert "first" in vocoder.request_slots
-    native_stream_chunk(vocoder, "first", frames[10:])
+    native_stream_chunk(vocoder, "first", frames[first_window_frames:])
     first_payload = final_payload(frames, is_streaming=True)
     first_payload.request_id = "first"
     vocoder.handle_streaming_new_request("first", first_payload)
     vocoder.handle_stream_done("first")
     assert not vocoder.request_slots
-    native_stream_chunk(vocoder, "reused", frames[:10])
+    native_stream_chunk(vocoder, "reused", frames[:first_window_frames])
     assert saved_bytes == first_messages[0].data["audio_waveform"]
     reused_messages = drained(vocoder)
     reused = [message for message in reused_messages if message.request_id == "reused"]
